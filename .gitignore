@@ -1,0 +1,48 @@
+# Node
+node_modules/
+/build
+/.svelte-kit
+/.vite
+/dist
+/package
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# Rust / Tauri (root-level just in case; src-tauri has its own)
+target/
+src-tauri/target/
+src-tauri/gen/
+src-tauri/WixTools/
+
+# Build / installer artifacts
+*.dmg
+*.deb
+*.AppImage
+*.app
+*.exe
+*.msi
+*.pkg
+
+# Local data
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+
+# Editor / IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.swp
+*.swo
+*~
+
+# Misc / asset sources kept out of the repo
+icons.zip
+termpane-icons.zip
+/tmp/
+
+# Claude Code local settings
+.claude/
