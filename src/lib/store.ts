@@ -1,5 +1,5 @@
 import { writable, derived } from "svelte/store";
-import type { TerminalSnapshot } from "./api";
+import type { PaneStat, TerminalSnapshot } from "./api";
 
 function createTerminalsStore() {
   const { subscribe, update, set } = writable<TerminalSnapshot[]>([]);
@@ -37,6 +37,31 @@ function createTerminalsStore() {
           };
         }),
       ),
+    setPaneStats: (stats: PaneStat[]) => {
+      if (stats.length === 0) return;
+      const byTerminal = new Map<string, Map<string, number>>();
+      for (const s of stats) {
+        let inner = byTerminal.get(s.terminalId);
+        if (!inner) {
+          inner = new Map();
+          byTerminal.set(s.terminalId, inner);
+        }
+        inner.set(s.paneId, s.memoryBytes);
+      }
+      update((list) =>
+        list.map((t) => {
+          const inner = byTerminal.get(t.id);
+          if (!inner) return t;
+          return {
+            ...t,
+            panes: t.panes.map((p) => {
+              const m = inner.get(p.id);
+              return m === undefined ? p : { ...p, memoryBytes: m };
+            }),
+          };
+        }),
+      );
+    },
     reorder: (ids: string[]) =>
       update((list) => {
         const byId = new Map(list.map((t) => [t.id, t]));
@@ -97,4 +122,26 @@ function layoutLeafOrder(
     for (const c of node.children) layoutLeafOrder(c, acc);
   }
   return acc;
+}
+
+export function aggregateMemory(terminal: TerminalSnapshot): number {
+  let total = 0;
+  for (const p of terminal.panes) {
+    if (typeof p.memoryBytes === "number") total += p.memoryBytes;
+  }
+  return total;
+}
+
+export function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "";
+  const KB = 1024;
+  const MB = KB * 1024;
+  const GB = MB * 1024;
+  if (n >= GB) return (n / GB).toFixed(2) + " GB";
+  if (n >= MB) {
+    const v = n / MB;
+    return (v >= 100 ? v.toFixed(0) : v.toFixed(1)) + " MB";
+  }
+  if (n >= KB) return Math.round(n / KB) + " KB";
+  return n + " B";
 }

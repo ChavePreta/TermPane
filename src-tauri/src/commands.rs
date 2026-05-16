@@ -1,7 +1,7 @@
 use crate::model::{PaneId, SplitDir, TerminalId, TerminalSnapshot};
 use crate::preferences::{self, Preferences};
 use crate::pty::{self, PtyHandle};
-use crate::state::{AppState, CloseResult, LayoutNode, PaneData, Terminal};
+use crate::state::{AppState, CloseResult, ExtractResult, LayoutNode, PaneData, Terminal};
 use chrono::Utc;
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -14,6 +14,21 @@ fn parse_terminal_id(s: &str) -> Result<TerminalId, String> {
 
 fn parse_pane_id(s: &str) -> Result<PaneId, String> {
     PaneId::from_str(s).map_err(|e| format!("invalid pane_id: {e}"))
+}
+
+/// Resolve a process's current working directory via sysinfo.
+/// Used so a new terminal/split inherits the cwd of the shell that spawned it.
+fn cwd_of_pid(pid: u32) -> Option<String> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut sys = System::new();
+    let target = Pid::from_u32(pid);
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[target]),
+        true,
+        ProcessRefreshKind::new().with_cwd(UpdateKind::Always),
+    );
+    let p = sys.process(target)?;
+    Some(p.cwd()?.to_string_lossy().into_owned())
 }
 
 fn spawn_pty(app: &AppHandle, pane_id: PaneId, cwd: Option<&str>) -> anyhow::Result<Arc<PtyHandle>> {
@@ -69,7 +84,8 @@ pub fn open_terminal_impl(app: &AppHandle) -> anyhow::Result<TerminalSnapshot> {
     let label = state.allocate_label();
     let created_at = Utc::now();
 
-    let pty = spawn_pty(app, pane_id, None)?;
+    let inherited_cwd = state.active_pane_shell_pid().and_then(cwd_of_pid);
+    let pty = spawn_pty(app, pane_id, inherited_cwd.as_deref())?;
 
     let mut panes = HashMap::new();
     panes.insert(
@@ -126,7 +142,8 @@ pub fn split_pane(
         _ => return Err(format!("invalid direction: {direction}")),
     };
     let new_pane = PaneId::new();
-    let new_pty = spawn_pty(&app, new_pane, None).map_err(|e| e.to_string())?;
+    let inherited_cwd = state.shell_pid_of(pid).and_then(cwd_of_pid);
+    let new_pty = spawn_pty(&app, new_pane, inherited_cwd.as_deref()).map_err(|e| e.to_string())?;
     let terminal_id = state
         .split(pid, new_pane, new_pty, dir)
         .ok_or_else(|| format!("pane {} not found", pid))?;
@@ -273,6 +290,33 @@ pub fn reorder_terminals(
 }
 
 #[tauri::command]
+pub fn extract_pane(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    pane_id: String,
+) -> Result<TerminalSnapshot, String> {
+    let pid = parse_pane_id(&pane_id)?;
+    let new_tid = TerminalId::new();
+    let label = state.allocate_label();
+    let ExtractResult { source_terminal_id } = state
+        .extract_pane(pid, new_tid, label)
+        .ok_or_else(|| {
+            "cannot extract: pane not found or sole pane of its terminal".to_string()
+        })?;
+
+    let src_snap = state.terminal_snapshot(source_terminal_id);
+    let new_snap = state
+        .terminal_snapshot(new_tid)
+        .ok_or_else(|| "new terminal disappeared after extract".to_string())?;
+
+    if let Some(s) = src_snap {
+        let _ = app.emit("terminal:updated", s);
+    }
+    let _ = app.emit("terminal:added", new_snap.clone());
+    Ok(new_snap)
+}
+
+#[tauri::command]
 pub fn set_always_on_top(app: AppHandle, enabled: bool) -> Result<(), String> {
     let window = app
         .get_webview_window("main")
@@ -280,6 +324,19 @@ pub fn set_always_on_top(app: AppHandle, enabled: bool) -> Result<(), String> {
     window
         .set_always_on_top(enabled)
         .map_err(|e| format!("set_always_on_top failed: {e}"))
+}
+
+/// Called by the frontend after the user confirms the quit dialog. Bypasses
+/// the `CloseRequested` interception (which would otherwise re-trigger the
+/// dialog) by destroying the window directly.
+#[tauri::command]
+pub fn quit_app(app: AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "window 'main' not found".to_string())?;
+    window
+        .destroy()
+        .map_err(|e| format!("destroy failed: {e}"))
 }
 
 #[tauri::command]

@@ -1,6 +1,6 @@
 [package]
 name = "termpane"
-version = "0.1.0"
+version = "0.2.0"
 description = "Gerenciador de terminais embutidos — Tauri + portable-pty"
 authors = ["Jonas <jonas@silveira.eti.br>"]
 edition = "2021"

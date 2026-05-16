@@ -393,6 +393,41 @@ impl AppState {
         false
     }
 
+    /// "<terminal label>: <command>" for every pane currently running a
+    /// foreground process. Empty when only idle shells are open.
+    pub fn running_foreground_commands(&self) -> Vec<String> {
+        let g = self.inner.read();
+        let mut out = Vec::new();
+        for t in &g.terminals {
+            for p in t.panes.values() {
+                if let Some(cmd) = &p.foreground_command {
+                    out.push(format!("{}: {}", t.label, cmd));
+                }
+            }
+        }
+        out
+    }
+
+    /// Shell PID of the active pane of the currently-active terminal, if any.
+    pub fn active_pane_shell_pid(&self) -> Option<u32> {
+        let g = self.inner.read();
+        let active = g.active?;
+        let t = g.terminals.iter().find(|t| t.id == active)?;
+        let p = t.panes.get(&t.active_pane)?;
+        p.pty.shell_pid
+    }
+
+    /// Shell PID of an arbitrary pane.
+    pub fn shell_pid_of(&self, pane_id: PaneId) -> Option<u32> {
+        let g = self.inner.read();
+        for t in &g.terminals {
+            if let Some(p) = t.panes.get(&pane_id) {
+                return p.pty.shell_pid;
+            }
+        }
+        None
+    }
+
     pub fn all_pane_ids(&self) -> Vec<(TerminalId, PaneId, Option<u32>, Option<i32>)> {
         let g = self.inner.read();
         let mut out = Vec::new();
@@ -446,4 +481,63 @@ pub enum CloseResult {
         terminal_id: TerminalId,
         removed_pane: Option<PaneData>,
     },
+}
+
+pub struct ExtractResult {
+    pub source_terminal_id: TerminalId,
+}
+
+impl AppState {
+    /// Moves a pane out of its current terminal into a brand-new terminal that
+    /// will live next to the source in the list. Returns `None` if the pane is
+    /// not found or is the sole pane in its terminal (in which case extraction
+    /// is a no-op).
+    pub fn extract_pane(
+        &self,
+        pane_id: PaneId,
+        new_terminal_id: TerminalId,
+        label: String,
+    ) -> Option<ExtractResult> {
+        let mut g = self.inner.write();
+        let source_pos = g
+            .terminals
+            .iter()
+            .position(|t| t.panes.contains_key(&pane_id))?;
+
+        // Refuse to extract if it's the only pane — would be a no-op rename.
+        if g.terminals[source_pos].panes.len() < 2 {
+            return None;
+        }
+
+        let source_terminal_id = g.terminals[source_pos].id;
+        let next_active = g.terminals[source_pos]
+            .layout
+            .first_other_leaf(pane_id);
+
+        // Remove the leaf from the source's layout and move the PaneData out.
+        let _ = g.terminals[source_pos].layout.remove_leaf(pane_id);
+        let pane_data = g.terminals[source_pos].panes.remove(&pane_id)?;
+
+        if g.terminals[source_pos].active_pane == pane_id {
+            if let Some(np) = next_active {
+                g.terminals[source_pos].active_pane = np;
+            }
+        }
+
+        let mut new_panes = HashMap::with_capacity(1);
+        new_panes.insert(pane_id, pane_data);
+        let new_terminal = Terminal {
+            id: new_terminal_id,
+            label,
+            created_at: Utc::now(),
+            panes: new_panes,
+            layout: LayoutNode::Leaf(pane_id),
+            active_pane: pane_id,
+        };
+
+        let insert_at = source_pos + 1;
+        g.terminals.insert(insert_at, new_terminal);
+
+        Some(ExtractResult { source_terminal_id })
+    }
 }

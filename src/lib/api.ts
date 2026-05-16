@@ -21,6 +21,7 @@ export interface PaneSnapshot {
   id: string;
   foregroundCommand: string | null;
   exitCode: number | null;
+  memoryBytes?: number;
 }
 
 export interface TerminalSnapshot {
@@ -36,6 +37,12 @@ export interface PaneForegroundChanged {
   terminalId: string;
   paneId: string;
   command: string | null;
+}
+
+export interface PaneStat {
+  terminalId: string;
+  paneId: string;
+  memoryBytes: number;
 }
 
 export const api = {
@@ -62,6 +69,9 @@ export const api = {
     invoke<void>("reorder_terminals", { ids }),
   setAlwaysOnTop: (enabled: boolean) =>
     invoke<void>("set_always_on_top", { enabled }),
+  extractPane: (paneId: string) =>
+    invoke<TerminalSnapshot>("extract_pane", { paneId }),
+  quitApp: () => invoke<void>("quit_app"),
 };
 
 export function onPtyOutput(
@@ -112,6 +122,18 @@ export function onTerminalsReordered(
   handler: (ids: string[]) => void,
 ): Promise<UnlistenFn> {
   return listen<string[]>("terminals:reordered", (e) => handler(e.payload));
+}
+
+export function onPaneStats(
+  handler: (stats: PaneStat[]) => void,
+): Promise<UnlistenFn> {
+  return listen<PaneStat[]>("panes:stats", (e) => handler(e.payload));
+}
+
+export function onAppCloseRequested(
+  handler: (running: string[]) => void,
+): Promise<UnlistenFn> {
+  return listen<string[]>("app:close-requested", (e) => handler(e.payload));
 }
 
 function base64ToBytes(b64: string): Uint8Array {

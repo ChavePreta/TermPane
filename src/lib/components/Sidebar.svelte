@@ -5,6 +5,7 @@
   import ThemeSwitcher from "./ThemeSwitcher.svelte";
   import PinButton from "./PinButton.svelte";
   import LinkButtons from "./LinkButtons.svelte";
+  import { sidebarCollapsed, sidebarWidth } from "../sidebarLayout";
 
   type Props = {
     onRequestClose: (id: string) => void;
@@ -14,6 +15,34 @@
   let { onRequestClose, onOpenPreferences }: Props = $props();
 
   let listEl: HTMLDivElement | null = $state(null);
+
+  // Resize handle state
+  let resizing = $state(false);
+  let resizeStartX = 0;
+  let resizeStartW = 0;
+
+  function handleResizePointerDown(e: PointerEvent) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    resizing = true;
+    resizeStartX = e.clientX;
+    resizeStartW = $sidebarWidth;
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+    window.addEventListener("pointermove", handleResizeMove);
+    window.addEventListener("pointerup", handleResizeUp);
+  }
+
+  function handleResizeMove(e: PointerEvent) {
+    if (!resizing) return;
+    sidebarWidth.set(resizeStartW + (e.clientX - resizeStartX));
+  }
+
+  function handleResizeUp() {
+    resizing = false;
+    window.removeEventListener("pointermove", handleResizeMove);
+    window.removeEventListener("pointerup", handleResizeUp);
+  }
 
   // Drag state
   let dragId = $state<string | null>(null);
@@ -125,7 +154,7 @@
   }
 </script>
 
-<aside class="sidebar">
+<aside class="sidebar" style="width: {$sidebarWidth}px">
   <div class="sidebar-header">
     <span>TermPane</span>
     <div class="sidebar-tools">
@@ -142,6 +171,16 @@
         </svg>
       </button>
       <ThemeSwitcher />
+      <button
+        class="icon-btn"
+        title="Hide sidebar (⌘B)"
+        aria-label="Hide sidebar"
+        onclick={() => sidebarCollapsed.set(true)}
+      >
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="15 18 9 12 15 6" />
+        </svg>
+      </button>
     </div>
   </div>
   <div
@@ -170,6 +209,14 @@
     <button class="new-terminal-btn" onclick={handleNew}>+ New terminal</button>
     <LinkButtons />
   </div>
+  <div
+    class="sidebar-resizer"
+    class:active={resizing}
+    onpointerdown={handleResizePointerDown}
+    role="separator"
+    aria-orientation="vertical"
+    aria-label="Resize sidebar"
+  ></div>
 </aside>
 
 <style>
@@ -202,5 +249,23 @@
     border-radius: 1px;
     margin: 1px 4px;
     pointer-events: none;
+  }
+
+  .sidebar-resizer {
+    position: absolute;
+    top: 0;
+    right: -2px;
+    width: 4px;
+    height: 100%;
+    cursor: ew-resize;
+    background: transparent;
+    transition: background 0.12s;
+    z-index: 20;
+    -webkit-app-region: no-drag;
+  }
+
+  .sidebar-resizer:hover,
+  .sidebar-resizer.active {
+    background: var(--accent);
   }
 </style>

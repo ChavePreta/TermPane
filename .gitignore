@@ -46,3 +46,7 @@ termpane-icons.zip
 
 # Claude Code local settings
 .claude/
+
+# Private development notes (kept local for reference)
+DEVELOPMENT.md
+_material/

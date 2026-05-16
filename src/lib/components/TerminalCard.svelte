@@ -2,7 +2,7 @@
   import { tick } from "svelte";
   import type { TerminalSnapshot } from "../api";
   import { api } from "../api";
-  import { aggregateForeground } from "../store";
+  import { aggregateForeground, aggregateMemory, formatBytes } from "../store";
 
   type Props = {
     terminal: TerminalSnapshot;
@@ -20,6 +20,7 @@
   let editValue = $state("");
 
   let foreground = $derived(aggregateForeground(terminal));
+  let memoryLabel = $derived(formatBytes(aggregateMemory(terminal)));
 
   function formatTime(iso: string): string {
     const d = new Date(iso);
@@ -115,6 +116,9 @@
         <span class="card-cmd"> — {foreground}</span>
       {/if}
     </span>
+    {#if memoryLabel && !hovering}
+      <span class="card-mem" title="Memory (shell + descendants)">{memoryLabel}</span>
+    {/if}
   {/if}
   {#if hovering && !editing}
     <span class="card-meta">
@@ -199,6 +203,14 @@
     font-family: inherit;
     font-size: 13px;
     outline: none;
+  }
+
+  .card-mem {
+    flex-shrink: 0;
+    font-size: 11px;
+    color: var(--fg-muted);
+    font-variant-numeric: tabular-nums;
+    padding-left: 6px;
   }
 
   .card-meta {

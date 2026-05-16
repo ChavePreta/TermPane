@@ -13,6 +13,7 @@
     installPreferencesListener,
   } from "$lib/preferences";
   import { alwaysOnTop } from "$lib/alwaysOnTop";
+  import { sidebarCollapsed } from "$lib/sidebarLayout";
   import { get } from "svelte/store";
   import {
     api,
@@ -20,7 +21,9 @@
     onTerminalRemoved,
     onTerminalUpdated,
     onPaneForeground,
+    onPaneStats,
     onTerminalsReordered,
+    onAppCloseRequested,
   } from "$lib/api";
   import { getPaneActions } from "$lib/paneActions";
   import { preferences, savePreferences } from "$lib/preferences";
@@ -32,7 +35,15 @@
 
   let pending = $state<PendingAction | null>(null);
   let prefsOpen = $state(false);
+  let quitRunning = $state<string[] | null>(null);
   let unlisteners: UnlistenFn[] = [];
+
+  let quitMessage = $derived.by(() => {
+    if (!quitRunning || quitRunning.length === 0) return "";
+    const list = quitRunning.map((r) => `  • ${r}`).join("\n");
+    const verb = quitRunning.length === 1 ? "command is" : "commands are";
+    return `${quitRunning.length} ${verb} still running:\n${list}\n\nQuit anyway?`;
+  });
 
   let pendingTerminal = $derived(
     pending ? $terminals.find((t) => t.id === pending!.terminalId) ?? null : null,
@@ -76,7 +87,11 @@
       await onPaneForeground(({ terminalId, paneId, command }) =>
         terminals.setPaneForeground(terminalId, paneId, command),
       ),
+      await onPaneStats((stats) => terminals.setPaneStats(stats)),
       await onTerminalsReordered((ids) => terminals.reorder(ids)),
+      await onAppCloseRequested((running) => {
+        quitRunning = running;
+      }),
     );
 
     const list = await api.listTerminals();
@@ -169,6 +184,24 @@
         await savePreferences({ ...p, fontSize: 13 });
         return;
       }
+      if (e.key === "b" || e.key === "B") {
+        e.preventDefault();
+        e.stopPropagation();
+        sidebarCollapsed.update((v) => !v);
+        return;
+      }
+      if (e.shiftKey && (e.key === "e" || e.key === "E")) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (term.panes.length < 2) return;
+        try {
+          const snap = await api.extractPane(term.activePane);
+          activeId.set(snap.id);
+        } catch (err) {
+          console.error("extractPane erro:", err);
+        }
+        return;
+      }
     }
 
     // Ctrl+letter (no Cmd, no Alt): send the control byte straight to the active PTY.
@@ -205,15 +238,42 @@
   function cancelAction() {
     pending = null;
   }
+
+  async function confirmQuit() {
+    quitRunning = null;
+    try {
+      await api.quitApp();
+    } catch (e) {
+      console.error("quit_app erro:", e);
+    }
+  }
+
+  function cancelQuit() {
+    quitRunning = null;
+  }
 </script>
 
 <main class="app">
-  <Sidebar
-    onRequestClose={(id) =>
-      (pending = { kind: "terminal", terminalId: id })}
-    onOpenPreferences={() => (prefsOpen = true)}
-  />
+  {#if !$sidebarCollapsed}
+    <Sidebar
+      onRequestClose={(id) =>
+        (pending = { kind: "terminal", terminalId: id })}
+      onOpenPreferences={() => (prefsOpen = true)}
+    />
+  {/if}
   <section class="content">
+    {#if $sidebarCollapsed}
+      <button
+        class="sidebar-reveal"
+        title="Show sidebar (⌘B)"
+        aria-label="Show sidebar"
+        onclick={() => sidebarCollapsed.set(false)}
+      >
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+      </button>
+    {/if}
     <div class="pane-host">
       {#each $terminals as t (t.id)}
         <div class="pane" class:active={t.id === $activeId}>
@@ -236,6 +296,16 @@
   confirmLabel="Close"
   onConfirm={confirmAction}
   onCancel={cancelAction}
+/>
+
+<ConfirmDialog
+  open={quitRunning !== null}
+  title="Quit TermPane?"
+  message={quitMessage}
+  confirmLabel="Quit"
+  cancelLabel="Cancel"
+  onConfirm={confirmQuit}
+  onCancel={cancelQuit}
 />
 
 <PreferencesDialog open={prefsOpen} onClose={() => (prefsOpen = false)} />

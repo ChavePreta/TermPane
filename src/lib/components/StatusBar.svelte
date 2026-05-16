@@ -24,8 +24,10 @@
     { keys: "⌘T", label: "new terminal" },
     { keys: "⌘D", label: "split horizontal" },
     { keys: "⌘⇧D", label: "split vertical" },
+    { keys: "⌘⇧E", label: "extract pane" },
     { keys: "⌘K", label: "clear" },
     { keys: "⌘W", label: "close pane" },
+    { keys: "⌘B", label: "toggle sidebar" },
   ];
 
   function toggle() {

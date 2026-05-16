@@ -85,6 +85,7 @@
     margin: 0 0 18px 0;
     color: var(--fg-muted);
     line-height: 1.5;
+    white-space: pre-line;
   }
 
   .actions {

@@ -90,14 +90,38 @@ button {
 }
 
 .sidebar {
-  width: 240px;
-  min-width: 240px;
+  position: relative;
+  flex-shrink: 0;
   background: var(--bg-elev-1);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   padding: 32px 8px 8px 8px;
   -webkit-app-region: drag;
+}
+
+.sidebar-reveal {
+  -webkit-app-region: no-drag;
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 30;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: var(--bg-elev-1);
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s, color 0.12s;
+  box-shadow: var(--shadow);
+}
+
+.sidebar-reveal:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
 }
 
 .sidebar-header {
