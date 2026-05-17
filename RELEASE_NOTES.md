@@ -1,3 +1,25 @@
+# Release Notes — v0.2.1 (2026-05-17)
+
+A maintenance release with two bug fixes, a long-overdue About panel, and a bundle identifier change.
+
+## 🐛 Fixed: Mouse-wheel scroll not reaching the bottom
+
+In some terminals, after scrolling up with the mouse wheel you couldn't fully scroll back down — the viewport would stop a few pixels short and only resync when you typed a key. This was the long-standing xterm.js wheel-drift bug ([xtermjs/xterm.js#4959](https://github.com/xtermjs/xterm.js/issues/4959)): the viewport's `scrollTop` lands 1px above the true bottom, leaving the terminal's internal "user is scrolled up" flag set, so incoming output is withheld from auto-scroll.
+
+TermPane now hooks the viewport's wheel event: when you scroll downward and end up within one row of the bottom, it snaps to the true bottom. Auto-scroll for incoming output is restored, and reading scrollback (scrolls that stop well above the bottom) is unaffected.
+
+## 🐛 Fixed: "Split vertical" / "Split horizontal" labels were swapped
+
+In the bottom shortcut bar, the labels for `⌘D` and `⌘⇧D` were reversed relative to the standard terminal-multiplexer convention. `⌘D` (panes side-by-side, vertical divider) now reads "split vertical", and `⌘⇧D` (panes stacked, horizontal divider) reads "split horizontal". Only the labels changed — keybindings and split behavior are unchanged.
+
+## ✨ New: Populated About panel
+
+The macOS **TermPane → About TermPane** menu now opens a real About panel with the app name, version, icon, project website (`termpane.com`), and license (PolyForm Internal Use 1.0.0). Previously the panel was effectively empty because no custom `AboutMetadata` had been wired into the menu.
+
+Implementing this required replacing the implicit default app menu with an explicit one built in Rust, which also gives the standard **Edit**, **View** (fullscreen), and **Window** submenus their correct items on macOS.
+
+---
+
 # Release Notes — v0.2.0 (2026-05-16)
 
 Six user-visible improvements landed today.
