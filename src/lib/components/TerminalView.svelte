@@ -26,6 +26,7 @@
   let resizeObs: ResizeObserver | null = null;
   let unlistenOutput: UnlistenFn | null = null;
   let unlistenExit: UnlistenFn | null = null;
+  let unlistenWheel: (() => void) | null = null;
   let unsubTheme: (() => void) | null = null;
   let unsubPrefs: (() => void) | null = null;
   let resizeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -49,6 +50,22 @@
     term.loadAddon(new WebLinksAddon());
 
     term.open(container);
+
+    const viewport = container.querySelector<HTMLElement>(".xterm-viewport");
+    if (viewport) {
+      const onWheel = (e: WheelEvent) => {
+        if (e.deltaY <= 0) return;
+        requestAnimationFrame(() => {
+          if (!term) return;
+          const buf = term.buffer.active;
+          if (buf.baseY - buf.viewportY <= 1) {
+            term.scrollToBottom();
+          }
+        });
+      };
+      viewport.addEventListener("wheel", onWheel, { passive: true });
+      unlistenWheel = () => viewport.removeEventListener("wheel", onWheel);
+    }
 
     try {
       const webgl = new WebglAddon();
@@ -105,6 +122,7 @@
     unregisterPaneActions(paneId);
     unlistenOutput?.();
     unlistenExit?.();
+    unlistenWheel?.();
     unsubTheme?.();
     unsubPrefs?.();
     resizeObs?.disconnect();
