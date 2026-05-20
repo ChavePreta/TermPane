@@ -23,6 +23,7 @@
   let container: HTMLDivElement;
   let term: Terminal | null = null;
   let fitAddon: FitAddon | null = null;
+  let webglAddon: WebglAddon | null = null;
   let resizeObs: ResizeObserver | null = null;
   let unlistenOutput: UnlistenFn | null = null;
   let unlistenExit: UnlistenFn | null = null;
@@ -34,6 +35,10 @@
   let lastRows = 0;
 
   onMount(async () => {
+    try {
+      await document.fonts?.ready;
+    } catch {}
+
     const prefs = get(preferences);
     term = new Terminal({
       cursorBlink: prefs.cursorBlink,
@@ -51,27 +56,39 @@
 
     term.open(container);
 
-    const viewport = container.querySelector<HTMLElement>(".xterm-viewport");
-    if (viewport) {
-      const onWheel = (e: WheelEvent) => {
-        if (e.deltaY <= 0) return;
-        requestAnimationFrame(() => {
-          if (!term) return;
-          const buf = term.buffer.active;
-          if (buf.baseY - buf.viewportY <= 1) {
-            term.scrollToBottom();
-          }
-        });
-      };
-      viewport.addEventListener("wheel", onWheel, { passive: true });
-      unlistenWheel = () => viewport.removeEventListener("wheel", onWheel);
-    }
+    const onWheel = (e: WheelEvent) => {
+      if (!term || e.deltaY === 0) return;
+      // App opted into mouse tracking — let xterm forward the wheel as an
+      // SGR mouse sequence so TUIs like vim/less still get their events.
+      if (term.modes.mouseTrackingMode !== "none") return;
+      e.preventDefault();
+      const fontSize = term.options.fontSize ?? 13;
+      const lineHeight = term.options.lineHeight ?? 1;
+      const pxPerLine = Math.max(1, fontSize * lineHeight);
+      const magnitude = Math.max(
+        1,
+        Math.round(Math.abs(e.deltaY) / pxPerLine),
+      );
+      term.scrollLines(magnitude * Math.sign(e.deltaY));
+      const buf = term.buffer.active;
+      if (e.deltaY > 0 && buf.baseY - buf.viewportY <= 1) {
+        term.scrollToBottom();
+      }
+    };
+    container.addEventListener("wheel", onWheel, { passive: false });
+    unlistenWheel = () => container.removeEventListener("wheel", onWheel);
 
     try {
       const webgl = new WebglAddon();
+      webgl.onContextLoss(() => {
+        webgl.dispose();
+        if (webglAddon === webgl) webglAddon = null;
+      });
       term.loadAddon(webgl);
+      webglAddon = webgl;
     } catch (e) {
-      console.warn("WebGL addon falhou, usando canvas:", e);
+      console.warn("WebGL addon failed, falling back to canvas:", e);
+      webglAddon = null;
     }
 
     term.onData((data) => {
@@ -113,6 +130,7 @@
       term.options.fontSize = p.fontSize;
       term.options.lineHeight = p.lineHeight;
       term.options.cursorBlink = p.cursorBlink;
+      webglAddon?.clearTextureAtlas();
       // Font changes require a re-fit to recompute cols/rows.
       scheduleFit();
     });
@@ -146,6 +164,7 @@
       if (cols !== lastCols || rows !== lastRows) {
         lastCols = cols;
         lastRows = rows;
+        webglAddon?.clearTextureAtlas();
         api.resizePane(paneId, cols, rows).catch((err) =>
           console.error("resizePane erro:", err),
         );
