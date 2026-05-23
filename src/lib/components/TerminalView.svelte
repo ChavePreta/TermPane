@@ -8,22 +8,26 @@
   import { resolvedTheme, xtermThemes } from "../theme";
   import { preferences } from "../preferences";
   import { registerPaneActions, unregisterPaneActions } from "../paneActions";
+  import { broadcastEnabled } from "../broadcast";
+  import { dropTargetPaneId } from "../dragState";
   import { get } from "svelte/store";
   import type { UnlistenFn } from "@tauri-apps/api/event";
 
   type Props = {
     paneId: string;
+    terminalId: string;
     active: boolean;
     terminalActive: boolean;
     onFocus?: () => void;
   };
 
-  let { paneId, active, terminalActive, onFocus }: Props = $props();
+  let { paneId, terminalId, active, terminalActive, onFocus }: Props = $props();
+
+  let isDropTarget = $derived($dropTargetPaneId === paneId);
 
   let container: HTMLDivElement;
   let term: Terminal | null = null;
   let fitAddon: FitAddon | null = null;
-  let webglAddon: WebglAddon | null = null;
   let resizeObs: ResizeObserver | null = null;
   let unlistenOutput: UnlistenFn | null = null;
   let unlistenExit: UnlistenFn | null = null;
@@ -35,10 +39,6 @@
   let lastRows = 0;
 
   onMount(async () => {
-    try {
-      await document.fonts?.ready;
-    } catch {}
-
     const prefs = get(preferences);
     term = new Terminal({
       cursorBlink: prefs.cursorBlink,
@@ -79,22 +79,21 @@
     unlistenWheel = () => container.removeEventListener("wheel", onWheel);
 
     try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => {
-        webgl.dispose();
-        if (webglAddon === webgl) webglAddon = null;
-      });
-      term.loadAddon(webgl);
-      webglAddon = webgl;
+      term.loadAddon(new WebglAddon());
     } catch (e) {
-      console.warn("WebGL addon failed, falling back to canvas:", e);
-      webglAddon = null;
+      console.warn("WebGL addon failed:", e);
     }
 
     term.onData((data) => {
-      api.writeInput(paneId, data).catch((err) =>
-        console.error("writeInput erro:", err),
-      );
+      if (get(broadcastEnabled).has(terminalId)) {
+        api.writeInputBroadcast(terminalId, data).catch((err) =>
+          console.error("writeInputBroadcast erro:", err),
+        );
+      } else {
+        api.writeInput(paneId, data).catch((err) =>
+          console.error("writeInput erro:", err),
+        );
+      }
     });
 
     unlistenOutput = await onPtyOutput(paneId, (chunk) => {
@@ -130,7 +129,6 @@
       term.options.fontSize = p.fontSize;
       term.options.lineHeight = p.lineHeight;
       term.options.cursorBlink = p.cursorBlink;
-      webglAddon?.clearTextureAtlas();
       // Font changes require a re-fit to recompute cols/rows.
       scheduleFit();
     });
@@ -164,7 +162,6 @@
       if (cols !== lastCols || rows !== lastRows) {
         lastCols = cols;
         lastRows = rows;
-        webglAddon?.clearTextureAtlas();
         api.resizePane(paneId, cols, rows).catch((err) =>
           console.error("resizePane erro:", err),
         );
@@ -193,6 +190,8 @@
   bind:this={container}
   class="xterm-host"
   class:active
+  class:is-drop-target={isDropTarget}
+  data-pane-id={paneId}
   onclick={handleHostClick}
   onfocusin={handleHostClick}
   role="presentation"
@@ -208,10 +207,21 @@
     border: 1px solid transparent;
     border-radius: 4px;
     transition: border-color 0.12s;
+    position: relative;
   }
 
   .xterm-host.active {
     border-color: var(--accent);
+  }
+
+  .xterm-host.is-drop-target::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border: 2px solid var(--accent);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
   }
 
   :global(.xterm) {

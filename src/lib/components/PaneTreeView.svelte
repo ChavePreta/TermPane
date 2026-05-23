@@ -68,6 +68,7 @@
 {#if node.type === "leaf"}
   <TerminalView
     paneId={node.id}
+    terminalId={terminal.id}
     active={terminal.activePane === node.id}
     {terminalActive}
     onFocus={() => handleFocus(node.id)}

@@ -57,6 +57,15 @@ pub enum SplitDir {
     Vertical,
 }
 
+impl SplitDir {
+    pub fn flipped(self) -> Self {
+        match self {
+            Self::Horizontal => Self::Vertical,
+            Self::Vertical => Self::Horizontal,
+        }
+    }
+}
+
 /// Snapshot DTO da árvore de layout enviado ao frontend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]

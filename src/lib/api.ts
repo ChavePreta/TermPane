@@ -71,6 +71,21 @@ export const api = {
     invoke<void>("set_always_on_top", { enabled }),
   extractPane: (paneId: string) =>
     invoke<TerminalSnapshot>("extract_pane", { paneId }),
+  mergeTerminalIntoPane: (
+    sourceTerminalId: string,
+    targetPaneId: string,
+    direction: SplitDir,
+  ) =>
+    invoke<TerminalSnapshot>("merge_terminal_into_pane", {
+      sourceTerminalId,
+      targetPaneId,
+      direction,
+    }),
+  flipParentSplit: (paneId: string) =>
+    invoke<TerminalSnapshot>("flip_parent_split", { paneId }),
+  writeInputBroadcast: (terminalId: string, data: string) =>
+    invoke<void>("write_input_broadcast", { terminalId, data }),
+  getPlatform: () => invoke<string>("get_platform"),
   quitApp: () => invoke<void>("quit_app"),
 };
 

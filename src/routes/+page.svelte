@@ -14,6 +14,8 @@
   } from "$lib/preferences";
   import { alwaysOnTop } from "$lib/alwaysOnTop";
   import { sidebarCollapsed } from "$lib/sidebarLayout";
+  import { platform, initPlatform, shortcut } from "$lib/platform";
+  import { broadcastEnabled, disableBroadcast } from "$lib/broadcast";
   import { get } from "svelte/store";
   import {
     api,
@@ -71,6 +73,7 @@
   });
 
   onMount(async () => {
+    await initPlatform();
     installPreferencesListener();
     await loadPreferences();
     // Sync the window with the persisted always-on-top state.
@@ -82,8 +85,14 @@
 
     unlisteners.push(
       await onTerminalAdded((t) => terminals.add(t)),
-      await onTerminalRemoved((id) => terminals.remove(id)),
-      await onTerminalUpdated((t) => terminals.upsert(t)),
+      await onTerminalRemoved((id) => {
+        terminals.remove(id);
+        disableBroadcast(id);
+      }),
+      await onTerminalUpdated((t) => {
+        terminals.upsert(t);
+        if (t.panes.length < 2) disableBroadcast(t.id);
+      }),
       await onPaneForeground(({ terminalId, paneId, command }) =>
         terminals.setPaneForeground(terminalId, paneId, command),
       ),
@@ -101,23 +110,64 @@
     else if (list[0]) activeId.set(list[0].id);
 
     window.addEventListener("keydown", handleKeydown, { capture: true });
+    window.addEventListener("contextmenu", handleContextMenu);
   });
 
   onDestroy(() => {
     for (const u of unlisteners) u();
     window.removeEventListener("keydown", handleKeydown, { capture: true });
+    window.removeEventListener("contextmenu", handleContextMenu);
   });
+
+  function handleContextMenu(e: MouseEvent) {
+    // Allow the native WebView menu inside terminal panes (so users can
+    // still get Copy/Paste/Inspect/etc.). Suppress everywhere else — that's
+    // where accidental Reload clicks happen.
+    if (e.target instanceof Element && e.target.closest(".xterm-host")) {
+      return;
+    }
+    e.preventDefault();
+  }
 
   async function handleKeydown(e: KeyboardEvent) {
     const term = $terminals.find((t) => t.id === $activeId);
+    const isMac = get(platform) === "mac";
 
-    // App shortcuts (Cmd-modified).
-    if (e.metaKey && !e.altKey) {
+    // Flip parent split orientation: Mac ⌘/, Linux Ctrl+Shift+/.
+    const flipMatch = isMac
+      ? e.metaKey && !e.altKey && !e.ctrlKey && !e.shiftKey
+      : e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey;
+    if (flipMatch && (e.key === "/" || e.code === "Slash")) {
+      e.preventDefault();
+      e.stopPropagation();
+      console.log("[flip] firing", {
+        paneId: term?.activePane,
+        panes: term?.panes.length,
+      });
+      if (term) {
+        try {
+          await api.flipParentSplit(term.activePane);
+        } catch (err) {
+          console.error("flipParentSplit erro:", err);
+        }
+      }
+      return;
+    }
+
+    // App-mod: Mac uses Cmd; Linux uses Ctrl+Shift.
+    const isAppMod = isMac
+      ? e.metaKey && !e.ctrlKey && !e.altKey
+      : e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey;
+    // Inside the app-mod, Mac's "Shift" sub-modifier maps to Alt on Linux
+    // (since the base mod already includes Shift).
+    const subShift = isMac ? e.shiftKey : e.altKey;
+
+    if (isAppMod) {
       if (!term) return;
       if (e.key === "d" || e.key === "D") {
         e.preventDefault();
         e.stopPropagation();
-        const dir = e.shiftKey ? "vertical" : "horizontal";
+        const dir = subShift ? "vertical" : "horizontal";
         try {
           await api.splitPane(term.activePane, dir);
         } catch (err) {
@@ -156,7 +206,7 @@
         getPaneActions(term.activePane)?.clear();
         return;
       }
-      // Font zoom (Cmd+=, Cmd++, Cmd+-, Cmd+0).
+      // Font zoom: Cmd+=/+, Cmd+-, Cmd+0 on Mac; same letters under Ctrl+Shift on Linux.
       if (e.key === "=" || e.key === "+") {
         e.preventDefault();
         e.stopPropagation();
@@ -190,7 +240,7 @@
         sidebarCollapsed.update((v) => !v);
         return;
       }
-      if (e.shiftKey && (e.key === "e" || e.key === "E")) {
+      if (subShift && (e.key === "e" || e.key === "E")) {
         e.preventDefault();
         e.stopPropagation();
         if (term.panes.length < 2) return;
@@ -204,18 +254,26 @@
       }
     }
 
-    // Ctrl+letter (no Cmd, no Alt): send the control byte straight to the active PTY.
-    // We use e.code (physical, layout-independent) because e.key may come empty/Dead
-    // depending on WebKit/keyboard.
-    if (e.ctrlKey && !e.metaKey && !e.altKey && term) {
+    // Ctrl+letter (no Cmd, no Alt, no Shift): send the control byte straight to
+    // the PTY. We use e.code (physical, layout-independent) because e.key may
+    // come empty/Dead depending on WebKit/keyboard. Honor broadcast mode so
+    // Ctrl+C / Ctrl+R / etc. reach every pane when it's on.
+    if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && term) {
       const m = e.code.match(/^Key([A-Z])$/);
       if (m) {
         const code = m[1].charCodeAt(0) - 64; // Ctrl+A=1, Ctrl+R=18, Ctrl+Z=26
         e.preventDefault();
         e.stopPropagation();
-        api
-          .writeInput(term.activePane, String.fromCharCode(code))
-          .catch((err) => console.error("ctrl input erro:", err));
+        const data = String.fromCharCode(code);
+        if (get(broadcastEnabled).has(term.id)) {
+          api
+            .writeInputBroadcast(term.id, data)
+            .catch((err) => console.error("ctrl broadcast erro:", err));
+        } else {
+          api
+            .writeInput(term.activePane, data)
+            .catch((err) => console.error("ctrl input erro:", err));
+        }
       }
     }
   }
@@ -265,7 +323,7 @@
     {#if $sidebarCollapsed}
       <button
         class="sidebar-reveal"
-        title="Show sidebar (⌘B)"
+        title={`Show sidebar (${shortcut($platform, "⌘B", "Ctrl+Shift+B")})`}
         aria-label="Show sidebar"
         onclick={() => sidebarCollapsed.set(false)}
       >
@@ -276,7 +334,11 @@
     {/if}
     <div class="pane-host">
       {#each $terminals as t (t.id)}
-        <div class="pane" class:active={t.id === $activeId}>
+        <div
+          class="pane"
+          class:active={t.id === $activeId}
+          class:broadcast-on={$broadcastEnabled.has(t.id) && t.panes.length >= 2}
+        >
           <PaneTreeView
             node={t.layout}
             terminal={t}

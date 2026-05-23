@@ -1,7 +1,7 @@
 use crate::model::{PaneId, SplitDir, TerminalId, TerminalSnapshot};
 use crate::preferences::{self, Preferences};
 use crate::pty::{self, PtyHandle};
-use crate::state::{AppState, CloseResult, ExtractResult, LayoutNode, PaneData, Terminal};
+use crate::state::{AppState, CloseResult, ExtractResult, LayoutNode, MergeResult, PaneData, Terminal};
 use chrono::Utc;
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -287,6 +287,78 @@ pub fn reorder_terminals(
     }
     let _ = app.emit("terminals:reordered", ids);
     Ok(())
+}
+
+#[tauri::command]
+pub fn merge_terminal_into_pane(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    source_terminal_id: String,
+    target_pane_id: String,
+    direction: String,
+) -> Result<TerminalSnapshot, String> {
+    let src_id = parse_terminal_id(&source_terminal_id)?;
+    let tgt_pane = parse_pane_id(&target_pane_id)?;
+    let dir = match direction.as_str() {
+        "horizontal" => SplitDir::Horizontal,
+        "vertical" => SplitDir::Vertical,
+        _ => return Err(format!("invalid direction: {direction}")),
+    };
+    let MergeResult {
+        target_terminal_id,
+        removed_source_id,
+    } = state
+        .merge_terminal_into_pane(src_id, tgt_pane, dir)
+        .ok_or_else(|| "cannot merge: source or target not found, or same terminal".to_string())?;
+
+    let target_snap = state
+        .terminal_snapshot(target_terminal_id)
+        .ok_or_else(|| "target terminal disappeared after merge".to_string())?;
+    let _ = app.emit("terminal:updated", target_snap.clone());
+    let _ = app.emit("terminal:removed", removed_source_id.to_string());
+    Ok(target_snap)
+}
+
+#[tauri::command]
+pub fn flip_parent_split(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    pane_id: String,
+) -> Result<TerminalSnapshot, String> {
+    let pid = parse_pane_id(&pane_id)?;
+    let terminal_id = state
+        .flip_parent_split(pid)
+        .ok_or_else(|| "no parent split to flip".to_string())?;
+    let snap = state
+        .terminal_snapshot(terminal_id)
+        .ok_or_else(|| "terminal disappeared after flip".to_string())?;
+    let _ = app.emit("terminal:updated", snap.clone());
+    Ok(snap)
+}
+
+#[tauri::command]
+pub fn write_input_broadcast(
+    state: tauri::State<'_, AppState>,
+    terminal_id: String,
+    data: String,
+) -> Result<(), String> {
+    let tid = parse_terminal_id(&terminal_id)?;
+    let ptys = state.ptys_of_terminal(tid);
+    if ptys.is_empty() {
+        return Err(format!("terminal {} has no live panes", tid));
+    }
+    let bytes = data.as_bytes();
+    for pty in ptys {
+        if let Err(e) = pty.write_all(bytes) {
+            tracing::warn!("broadcast write failed: {e}");
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_platform() -> String {
+    std::env::consts::OS.to_string()
 }
 
 #[tauri::command]

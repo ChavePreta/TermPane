@@ -5,6 +5,75 @@ All notable changes to TermPane are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-05-23
+
+### Added
+
+- **Drag-to-merge.** Drag a card from the sidebar onto another terminal's pane
+  area to merge it as a split. Hold `Shift` while releasing to make the new
+  split vertical instead of horizontal. The source terminal's entire layout
+  subtree (single pane or nested splits) is preserved as a child of the new
+  split node, then the source terminal is removed. PTYs keep running —
+  identical guarantee to `extract_pane`. Backend:
+  `AppState::merge_terminal_into_pane` + new
+  `LayoutNode::split_at_with_subtree`. Frontend: pane host marked with
+  `data-pane-id`; sidebar's existing pointer-drag resolves the target via
+  `document.elementFromPoint` and publishes the current target through a new
+  `$dropTargetPaneId` store (`src/lib/dragState.ts`).
+- **Flip split orientation.** New shortcut `⌘/` (macOS) / `Ctrl+Shift+/`
+  (Linux) flips the orientation of the split that immediately contains the
+  active pane (horizontal ⇄ vertical). No-op when the pane is the sole leaf
+  in its terminal. Backend: `LayoutNode::flip_parent_of` walks the tree from
+  the leaf upward and toggles the nearest enclosing `SplitDir` via the new
+  `SplitDir::flipped()` helper.
+- **Broadcast input.** When the active terminal has 2 or more panes, a new
+  toggle appears in the status bar. While on, every keystroke from any pane
+  of that terminal is mirrored to every other pane in the same terminal
+  (input only — output stays independent). The terminal gets a red outline
+  while broadcast is active, and the mode auto-disables when the pane count
+  drops below 2. Backend command `write_input_broadcast(terminal_id, data)`
+  iterates over `layout.leaves()` and writes to each PTY in a single IPC
+  round-trip. Frontend state lives in `$broadcastEnabled: Set<TerminalId>`
+  (`src/lib/broadcast.ts`) — ephemeral, not persisted.
+- **Linux keyboard shortcut layer.** Every macOS `⌘`-based app shortcut now
+  has a Linux equivalent following the GNOME Terminal / Konsole convention:
+  `Ctrl+Shift+letter` is the app-mod, leaving plain `Ctrl+letter` available
+  as a PTY control byte. When a macOS shortcut adds Shift as a sub-modifier
+  (e.g. `⌘⇧D`), the Linux mapping adds Alt instead
+  (`Ctrl+Shift+Alt+D`), since Shift is already part of the base mod.
+  Platform is detected via a new `get_platform` Tauri command (returns
+  `std::env::consts::OS`) and exposed as `$platform`
+  (`src/lib/platform.ts`). The status bar and a few tooltips render the
+  correct labels for the current OS.
+
+### Changed
+
+- Status-bar shortcut hints now render per-platform: macOS shows `⌘T`, Linux
+  shows `Ctrl+Shift+T`, and so on. The "Hide/Show sidebar" tooltips follow
+  the same convention.
+
+### Fixed
+
+- **Right-click context menu suppressed outside terminal panes.** The
+  WebView's default context menu (with a "Reload" item that would tear
+  down every xterm.js instance and orphan its PTY in one accidental click)
+  no longer appears in the sidebar, status bar, or any other chrome.
+  Implementation: a global `contextmenu` listener that calls
+  `preventDefault()` unless `e.target.closest('.xterm-host')` matches —
+  inside terminal panes the native menu still appears so users can
+  Copy/Paste/Inspect/etc.
+
+### Reverted
+
+- **v0.2.2 WebGL glyph atlas mitigations.** The three measures added in
+  v0.2.2 — waiting for `document.fonts.ready` before opening the terminal,
+  the `onContextLoss` listener with canvas fallback, and the
+  `clearTextureAtlas()` calls on font/preference changes and on
+  `cols`/`rows` changes — degraded rendering in practice (rather than
+  fixing the glyph corruption they targeted) and are gone. The v0.2.2
+  **mouse-wheel handler** (explicit `scrollLines()` with mouse-tracking
+  passthrough) is independent and is kept.
+
 ## [0.2.2] - 2026-05-20
 
 ### Fixed
@@ -92,6 +161,7 @@ Initial release.
 - macOS-first build (`.dmg` + `.app`); Linux `.deb` + `.AppImage` via local
   build only.
 
+[0.3.0]: https://github.com/ChavePreta/TermPane/releases/tag/v0.3.0
 [0.2.2]: https://github.com/ChavePreta/TermPane/releases/tag/v0.2.2
 [0.2.1]: https://github.com/ChavePreta/TermPane/releases/tag/v0.2.1
 [0.2.0]: https://github.com/ChavePreta/TermPane/releases/tag/v0.2.0

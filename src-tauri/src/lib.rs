@@ -41,6 +41,10 @@ pub fn run() {
             commands::get_preferences,
             commands::set_preferences,
             commands::extract_pane,
+            commands::merge_terminal_into_pane,
+            commands::flip_parent_split,
+            commands::write_input_broadcast,
+            commands::get_platform,
             commands::quit_app,
         ])
         .on_window_event(|window, event| {

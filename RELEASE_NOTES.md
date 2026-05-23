@@ -1,3 +1,90 @@
+# Release Notes — v0.3.0 (2026-05-23)
+
+A feature release built around composition: you can now rearrange terminals into splits with a drag instead of starting over, flip a split's orientation without breaking and re-creating it, drive several panes at once, and use the app comfortably on Linux.
+
+## ✨ New: Drag a sidebar card into a terminal to merge them as a split
+
+Until now, the only way to turn two separate cards into a split was: close one, split the other, paste your work back, recover the cwd, etc. Now you just drag.
+
+- Pick up any card from the sidebar.
+- Drop it on the **terminal area** (anywhere over the panes on the right) instead of back on the sidebar.
+- The dragged card disappears and its terminal's whole layout — single pane or even nested splits — becomes a sibling of the pane you dropped on, inside a new split.
+- Hold `Shift` while releasing to make the new split vertical; release without `Shift` for horizontal.
+
+Every PTY keeps running across the merge — no shell respawns, no scrollback loss, no foreground process interruption. Dragging back to a slot in the sidebar still reorders cards exactly like before.
+
+Under the hood, the target pane host got a `data-pane-id` attribute and the sidebar's existing pointer-drag now uses `document.elementFromPoint` to resolve which pane the cursor is currently over; the new `AppState::merge_terminal_into_pane` performs the layout-tree splice and moves the `PaneData` map across in one write lock, then the source terminal is removed.
+
+## ✨ New: Flip a split's orientation in place — `⌘/` / `Ctrl+Shift+/`
+
+Started horizontal but wished it were vertical? Press `⌘/` (macOS) or `Ctrl+Shift+/` (Linux). The split that immediately contains the focused pane flips between horizontal and vertical. No re-creation, no PTYs reborn, no scrollback lost — just the layout direction toggles. In nested splits, only the immediate parent flips.
+
+Backend-side this is `LayoutNode::flip_parent_of(pane_id)`: a depth-first walk that hits the deepest match first, ensuring the nearest enclosing split is the one that turns.
+
+## ✨ New: Broadcast typing across every pane in a split
+
+When the active terminal has 2 or more panes, a **Broadcast** toggle now appears in the status bar. Turn it on and every keystroke you type into any pane is mirrored to every other pane in the same terminal — handy for running the same command on several SSH sessions, scripting bulk maintenance, or just synchronizing setup steps across worktrees.
+
+- Toggle from the status-bar button (only visible when broadcast is meaningful, i.e. ≥ 2 panes).
+- The terminal gets a red outline while broadcast is active, so you can't forget it's on.
+- Output is **not** mirrored — each pane shows its own results. Only input (your keystrokes) goes to all panes.
+- The mode disables itself automatically if the pane count drops below 2 (e.g. you close panes).
+- State is in-memory only; broadcast resets on app restart, by design.
+
+Implementation: a new `write_input_broadcast(terminal_id, data)` IPC command iterates `layout.leaves()` for that terminal and writes the bytes to every PTY in a single round-trip; the frontend's `term.onData` handler in `TerminalView` checks a `$broadcastEnabled: Set<TerminalId>` store before deciding whether to send to one pane or all.
+
+## ✨ New: Full Linux keyboard shortcut layer
+
+Every macOS `⌘`-based app shortcut now has a Linux equivalent following the GNOME Terminal / Konsole convention. `Ctrl+Shift+letter` is the app-mod on Linux, leaving plain `Ctrl+letter` available as a PTY control byte (Ctrl+R reverse-search, Ctrl+A line start, Ctrl+C interrupt, etc. all still flow through). When a macOS shortcut adds Shift as a sub-modifier (e.g. `⌘⇧D` for vertical split), the Linux mapping uses Alt for that role (`Ctrl+Shift+Alt+D`) — since Shift is already part of the base.
+
+| Action                          | macOS               | Linux               |
+| ------------------------------- | ------------------- | ------------------- |
+| New terminal                    | `⌘T`                | `Ctrl+Shift+T`      |
+| Close pane / terminal           | `⌘W`                | `Ctrl+Shift+W`      |
+| Split horizontal                | `⌘D`                | `Ctrl+Shift+D`      |
+| Split vertical                  | `⌘⇧D`               | `Ctrl+Shift+Alt+D`  |
+| **Flip parent split**           | `⌘/`                | `Ctrl+Shift+/`      |
+| Extract pane to a new card      | `⌘⇧E`               | `Ctrl+Shift+Alt+E`  |
+| Toggle sidebar                  | `⌘B`                | `Ctrl+Shift+B`      |
+| Clear viewport + scrollback     | `⌘K`                | `Ctrl+Shift+K`      |
+| Font zoom in / out / reset      | `⌘=` / `⌘-` / `⌘0`  | `Ctrl+Shift+=` / `Ctrl+Shift+-` / `Ctrl+Shift+0` |
+
+The status bar and "Hide/Show sidebar" tooltips automatically display the right labels for the current OS. Platform is detected at startup via a new `get_platform` Tauri command (`std::env::consts::OS`) and exposed as `$platform` in `src/lib/platform.ts`.
+
+## 🔄 Reverted: WebGL glyph atlas mitigations from v0.2.2
+
+The v0.2.2 release added three measures to fight glyph corruption in long-running Claude Code / `htop` sessions: waiting for `document.fonts.ready` before opening the terminal, an `onContextLoss` listener that fell back to the canvas renderer, and `clearTextureAtlas()` calls on font/preference changes and on viewport resizes. In practice, these made rendering **worse**, not better, so they've been removed.
+
+The v0.2.2 **mouse-wheel handler** is independent and is preserved — explicit `scrollLines()` driving with mouse-tracking passthrough still keeps `vim`, `less`, `htop` and friends happy.
+
+---
+
+# Release Notes — v0.2.2 (2026-05-20)
+
+A fix-and-CI release: a long-running rendering bug squashed, the mouse-wheel scroll-drift fully resolved, and Linux artifacts now ship from CI.
+
+## 🐛 Fixed: WebGL glyph atlas corruption during long sessions
+
+Under heavy redraw load — most visibly during long Claude Code sessions and busy `htop`/`btop` views — the WebGL renderer would gradually desynchronize its glyph atlas, replacing on-screen text with garbled Unicode-like noise until a window resize forced an atlas rebuild. TermPane now:
+
+- Waits for `document.fonts.ready` before opening the terminal, so the initial atlas is built with the correct font metrics.
+- Listens for the WebGL renderer's `onContextLoss` event and falls back to the canvas renderer when the context is dropped (Chromium/WebKit shed WebGL contexts under memory pressure).
+- Calls `clearTextureAtlas()` on every font/preference change and whenever the viewport's `cols`/`rows` change.
+
+## 🐛 Fixed: Mouse-wheel scroll-down getting stuck under heavy output
+
+The 0.2.1 mitigation worked for steady-state cases but broke down when output was streaming in fast. The previous handler still depended on xterm's internal wheel routing, which fell out of sync under aggressive redraws. TermPane now installs its own wheel listener on the host container and drives `term.scrollLines()` explicitly, deriving a sane line count from `fontSize × lineHeight`. The listener bails out (forwarding wheel events as SGR mouse sequences) whenever the active app has opted into mouse tracking, so `vim`, `less`, `htop`, `tmux`, and the like still receive raw wheel events.
+
+## ✨ New: Linux release pipeline in GitHub Actions
+
+A new workflow (`.github/workflows/release-linux.yml`) builds `.deb` and `.rpm` artifacts on every `v*` tag push and attaches them directly to the draft GitHub Release. Runs on `ubuntu-22.04` so the binaries link against an older glibc and are usable on most current Linux distros without rebuilding.
+
+## 📝 New: CHANGELOG.md
+
+Project history is now tracked formally in `CHANGELOG.md` following the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) convention, with retroactive entries for 0.2.1 / 0.2.0 / 0.1.0.
+
+---
+
 # Release Notes — v0.2.1 (2026-05-17)
 
 A maintenance release with two bug fixes, a long-overdue About panel, and a bundle identifier change.

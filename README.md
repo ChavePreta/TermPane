@@ -92,17 +92,28 @@ with the currently running command shown right next to its label.
 
 ## Keyboard shortcuts
 
-| Shortcut             | Action                                    |
-| -------------------- | ----------------------------------------- |
-| `⌘T`                 | New terminal                              |
-| `⌘W`                 | Close pane / terminal (with confirmation) |
-| `⌘D` / `⌘⇧D`         | Split horizontal / vertical               |
-| `⌘K`                 | Clear viewport + scrollback               |
-| `⌘=` / `⌘-` / `⌘0`   | Font zoom in / out / reset                |
-| Double-click / `F2`  | Rename active card                        |
-| `Esc`                | Cancel rename / close dialog              |
+| Action                                    | macOS               | Linux                  |
+| ----------------------------------------- | ------------------- | ---------------------- |
+| New terminal                              | `⌘T`                | `Ctrl+Shift+T`         |
+| Close pane / terminal (with confirmation) | `⌘W`                | `Ctrl+Shift+W`         |
+| Split horizontal / vertical               | `⌘D` / `⌘⇧D`        | `Ctrl+Shift+D` / `Ctrl+Shift+Alt+D` |
+| Flip orientation of parent split          | `⌘/`                | `Ctrl+Shift+/`         |
+| Extract active pane to new card           | `⌘⇧E`               | `Ctrl+Shift+Alt+E`     |
+| Clear viewport + scrollback               | `⌘K`                | `Ctrl+Shift+K`         |
+| Toggle sidebar                            | `⌘B`                | `Ctrl+Shift+B`         |
+| Font zoom in / out / reset                | `⌘=` / `⌘-` / `⌘0`  | `Ctrl+Shift+=` / `Ctrl+Shift+-` / `Ctrl+Shift+0` |
+| Rename active card                        | Double-click / `F2` | Double-click / `F2`    |
+| Cancel rename / close dialog              | `Esc`               | `Esc`                  |
 
 Any `Ctrl+letter` (Ctrl+R reverse search, Ctrl+A line start, Ctrl+E line end, Ctrl+C interrupt, …) is routed straight to the active PTY.
+
+### Drag-and-drop
+
+Drag a card from the sidebar **into the terminal area** to merge it as a split of the terminal you drop on. Hold `Shift` while releasing to make the new split vertical instead of horizontal. Dragging a card back into the sidebar still reorders the list as before.
+
+### Broadcast input
+
+When the active terminal has 2 or more panes, a **Broadcast** toggle appears in the status bar. Turn it on to mirror every keystroke from any pane to every other pane in the same terminal — handy for running the same command across multiple SSH sessions. The terminal gets a red outline while broadcast is active. Output stays independent per pane.
 
 ---
 

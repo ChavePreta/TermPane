@@ -1,6 +1,6 @@
 {
   "name": "termpane",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "TermPane — native, embedded terminal manager",
   "type": "module",
   "scripts": {

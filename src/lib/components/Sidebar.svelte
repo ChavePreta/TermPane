@@ -1,6 +1,8 @@
 <script lang="ts">
   import { terminals, activeId } from "../store";
   import { api } from "../api";
+  import { dropTargetPaneId } from "../dragState";
+  import { platform, shortcut } from "../platform";
   import TerminalCard from "./TerminalCard.svelte";
   import ThemeSwitcher from "./ThemeSwitcher.svelte";
   import PinButton from "./PinButton.svelte";
@@ -48,10 +50,21 @@
   let dragId = $state<string | null>(null);
   let dragStarted = $state(false);
   let dropIndex = $state<number | null>(null);
+  let dropPaneId: string | null = null;
+  let lastShift = false;
   let dragStartX = 0;
   let dragStartY = 0;
   let originalIndex = 0;
   const DRAG_THRESHOLD = 5;
+
+  function paneIdUnderPointer(clientX: number, clientY: number): string | null {
+    let el: Element | null = document.elementFromPoint(clientX, clientY);
+    while (el) {
+      if (el instanceof HTMLElement && el.dataset.paneId) return el.dataset.paneId;
+      el = el.parentElement;
+    }
+    return null;
+  }
 
   async function handleNew() {
     try {
@@ -105,6 +118,24 @@
       dragStarted = true;
       document.body.classList.add("termpane-dragging");
     }
+    lastShift = e.shiftKey;
+    const pane = paneIdUnderPointer(e.clientX, e.clientY);
+    if (pane) {
+      // Cards belonging to the dragged terminal would be inside its own pane area
+      // (none right now — sidebar cards are outside .pane). But the backend also
+      // refuses self-merge, so we only suppress here to avoid the highlight.
+      const term = $terminals.find((t) =>
+        t.panes.some((p) => p.id === pane),
+      );
+      if (term && term.id !== dragId) {
+        dropPaneId = pane;
+        dropTargetPaneId.set(pane);
+        dropIndex = null;
+        return;
+      }
+    }
+    dropPaneId = null;
+    dropTargetPaneId.set(null);
     dropIndex = computeDropIndex(e.clientY);
   }
 
@@ -128,10 +159,30 @@
     const wasDragging = dragStarted;
     const draggedId = dragId;
     const targetIdx = dropIndex;
+    const droppedOnPane = dropPaneId;
+    const shift = lastShift;
     dragId = null;
     dragStarted = false;
     dropIndex = null;
-    if (!wasDragging || draggedId === null || targetIdx === null) return;
+    dropPaneId = null;
+    dropTargetPaneId.set(null);
+    if (!wasDragging || draggedId === null) return;
+
+    if (droppedOnPane) {
+      try {
+        const snap = await api.mergeTerminalIntoPane(
+          draggedId,
+          droppedOnPane,
+          shift ? "vertical" : "horizontal",
+        );
+        activeId.set(snap.id);
+      } catch (e) {
+        console.error("mergeTerminalIntoPane:", e);
+      }
+      return;
+    }
+
+    if (targetIdx === null) return;
 
     const list = $terminals;
     const orig = list.findIndex((t) => t.id === draggedId);
@@ -173,7 +224,7 @@
       <ThemeSwitcher />
       <button
         class="icon-btn"
-        title="Hide sidebar (⌘B)"
+        title={`Hide sidebar (${shortcut($platform, "⌘B", "Ctrl+Shift+B")})`}
         aria-label="Hide sidebar"
         onclick={() => sidebarCollapsed.set(true)}
       >

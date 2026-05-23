@@ -70,6 +70,68 @@ impl LayoutNode {
         }
     }
 
+    /// Replaces the target Leaf with a Split containing [target, subtree].
+    /// Used by drag-to-merge — `subtree` is the donor terminal's whole layout.
+    pub fn split_at_with_subtree(
+        &mut self,
+        target: PaneId,
+        subtree: LayoutNode,
+        dir: SplitDir,
+    ) -> bool {
+        match self {
+            LayoutNode::Leaf(id) if *id == target => {
+                let target_id = *id;
+                *self = LayoutNode::Split {
+                    dir,
+                    children: vec![LayoutNode::Leaf(target_id), subtree],
+                    ratios: vec![0.5, 0.5],
+                };
+                true
+            }
+            LayoutNode::Leaf(_) => false,
+            LayoutNode::Split { children, .. } => {
+                // We need to consume `subtree` in only one branch. Walk imperatively.
+                let mut subtree_opt = Some(subtree);
+                for c in children.iter_mut() {
+                    if c.contains(target) {
+                        let s = subtree_opt.take().expect("subtree consumed in one branch only");
+                        return c.split_at_with_subtree(target, s, dir);
+                    }
+                }
+                false
+            }
+        }
+    }
+
+    fn contains(&self, target: PaneId) -> bool {
+        match self {
+            LayoutNode::Leaf(id) => *id == target,
+            LayoutNode::Split { children, .. } => children.iter().any(|c| c.contains(target)),
+        }
+    }
+
+    /// Flips the orientation of the nearest Split ancestor that contains `target`.
+    /// Returns `true` on success. No-op (returns `false`) when `target` is the sole
+    /// leaf at the root (no enclosing split).
+    pub fn flip_parent_of(&mut self, target: PaneId) -> bool {
+        match self {
+            LayoutNode::Leaf(_) => false,
+            LayoutNode::Split { dir, children, .. } => {
+                // Try deeper first — we want the closest enclosing split.
+                for c in children.iter_mut() {
+                    if c.flip_parent_of(target) {
+                        return true;
+                    }
+                }
+                if children.iter().any(|c| matches!(c, LayoutNode::Leaf(id) if *id == target)) {
+                    *dir = dir.flipped();
+                    return true;
+                }
+                false
+            }
+        }
+    }
+
     /// Removes the target Leaf. Returns (found, whole_node_should_be_removed).
     /// When a Split is left with a single child, it collapses to that child.
     pub fn remove_leaf(&mut self, target: PaneId) -> RemoveOutcome {
@@ -487,7 +549,91 @@ pub struct ExtractResult {
     pub source_terminal_id: TerminalId,
 }
 
+pub struct MergeResult {
+    pub target_terminal_id: TerminalId,
+    pub removed_source_id: TerminalId,
+}
+
 impl AppState {
+    /// Returns the PTY handles of every live pane in the given terminal, in
+    /// layout (leaf) order. Used by broadcast input.
+    pub fn ptys_of_terminal(&self, terminal_id: TerminalId) -> Vec<SharedPty> {
+        let g = self.inner.read();
+        let Some(t) = g.terminals.iter().find(|t| t.id == terminal_id) else {
+            return Vec::new();
+        };
+        t.layout
+            .leaves()
+            .into_iter()
+            .filter_map(|pid| t.panes.get(&pid).map(|p| p.pty.clone()))
+            .collect()
+    }
+
+    /// Merges the source terminal into the target terminal as a sibling of
+    /// `target_pane_id`. The source's layout subtree is inserted next to the
+    /// target leaf inside a new Split with the given direction; all source
+    /// PaneData entries move into the target's `panes` map; the source
+    /// terminal is removed from the list. PTYs keep running.
+    pub fn merge_terminal_into_pane(
+        &self,
+        source_terminal_id: TerminalId,
+        target_pane_id: PaneId,
+        dir: SplitDir,
+    ) -> Option<MergeResult> {
+        let mut g = self.inner.write();
+        let target_pos = g
+            .terminals
+            .iter()
+            .position(|t| t.panes.contains_key(&target_pane_id))?;
+        let target_terminal_id = g.terminals[target_pos].id;
+        // Refuse no-op (drop on a pane that belongs to the source itself).
+        if target_terminal_id == source_terminal_id {
+            return None;
+        }
+        // Take the source terminal out of the vec first.
+        let source_pos = g.terminals.iter().position(|t| t.id == source_terminal_id)?;
+        let source = g.terminals.remove(source_pos);
+        // `target_pos` may have shifted if the source was earlier in the vec.
+        let target_pos = g
+            .terminals
+            .iter()
+            .position(|t| t.id == target_terminal_id)?;
+
+        // Insert the source's subtree at the target leaf. The pane was just
+        // confirmed to live in the target — this assertion is for the type
+        // checker, not a runtime invariant we expect to fail.
+        let _ok = g.terminals[target_pos]
+            .layout
+            .split_at_with_subtree(target_pane_id, source.layout, dir);
+        debug_assert!(_ok);
+
+        // Move panes over (PaneIds are UUIDs — collisions are not possible).
+        for (pid, data) in source.panes {
+            g.terminals[target_pos].panes.insert(pid, data);
+        }
+
+        if g.active == Some(source_terminal_id) {
+            g.active = Some(target_terminal_id);
+        }
+
+        Some(MergeResult {
+            target_terminal_id,
+            removed_source_id: source_terminal_id,
+        })
+    }
+
+    /// Flips the orientation of the split that directly contains `pane_id`.
+    /// No-op if the pane is the sole leaf in its terminal.
+    pub fn flip_parent_split(&self, pane_id: PaneId) -> Option<TerminalId> {
+        let mut g = self.inner.write();
+        for t in g.terminals.iter_mut() {
+            if t.panes.contains_key(&pane_id) {
+                return t.layout.flip_parent_of(pane_id).then_some(t.id);
+            }
+        }
+        None
+    }
+
     /// Moves a pane out of its current terminal into a brand-new terminal that
     /// will live next to the source in the list. Returns `None` if the pane is
     /// not found or is the sole pane in its terminal (in which case extraction
