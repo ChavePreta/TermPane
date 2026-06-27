@@ -6,12 +6,15 @@
   import PaneTreeView from "$lib/components/PaneTreeView.svelte";
   import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
   import PreferencesDialog from "$lib/components/PreferencesDialog.svelte";
+  import ShortcutsDialog from "$lib/components/ShortcutsDialog.svelte";
   import StatusBar from "$lib/components/StatusBar.svelte";
-  import { terminals, activeId, aggregateForeground } from "$lib/store";
+  import { terminals, activeId, aggregateForeground, selectTerminal } from "$lib/store";
+  import { clearAttention } from "$lib/attention";
   import {
     loadPreferences,
     installPreferencesListener,
   } from "$lib/preferences";
+  import { loadShortcuts, installShortcutsListener } from "$lib/shortcuts";
   import { alwaysOnTop } from "$lib/alwaysOnTop";
   import { sidebarCollapsed } from "$lib/sidebarLayout";
   import { platform, initPlatform, shortcut } from "$lib/platform";
@@ -37,6 +40,7 @@
 
   let pending = $state<PendingAction | null>(null);
   let prefsOpen = $state(false);
+  let shortcutsOpen = $state(false);
   let quitRunning = $state<string[] | null>(null);
   let unlisteners: UnlistenFn[] = [];
 
@@ -50,6 +54,21 @@
   let pendingTerminal = $derived(
     pending ? $terminals.find((t) => t.id === pending!.terminalId) ?? null : null,
   );
+
+  // The user is now looking at the active terminal — drop any attention flag on
+  // it. Fires for every selection path (sidebar click, pane focus, keyboard
+  // switch, new terminal) since they all funnel through $activeId.
+  $effect(() => {
+    const id = $activeId;
+    if (id) clearAttention(id);
+  });
+
+  // A bell can flag the active terminal while the window is backgrounded; clear
+  // it once the window regains focus and the user is looking again.
+  function handleWindowFocus() {
+    const id = get(activeId);
+    if (id) clearAttention(id);
+  }
 
   let confirmTitle = $derived(
     pending?.kind === "pane" ? "Close pane" : "Close terminal",
@@ -76,6 +95,8 @@
     await initPlatform();
     installPreferencesListener();
     await loadPreferences();
+    await installShortcutsListener();
+    await loadShortcuts();
     // Sync the window with the persisted always-on-top state.
     try {
       await api.setAlwaysOnTop(get(alwaysOnTop));
@@ -111,12 +132,14 @@
 
     window.addEventListener("keydown", handleKeydown, { capture: true });
     window.addEventListener("contextmenu", handleContextMenu);
+    window.addEventListener("focus", handleWindowFocus);
   });
 
   onDestroy(() => {
     for (const u of unlisteners) u();
     window.removeEventListener("keydown", handleKeydown, { capture: true });
     window.removeEventListener("contextmenu", handleContextMenu);
+    window.removeEventListener("focus", handleWindowFocus);
   });
 
   function handleContextMenu(e: MouseEvent) {
@@ -140,10 +163,6 @@
     if (flipMatch && (e.key === "/" || e.code === "Slash")) {
       e.preventDefault();
       e.stopPropagation();
-      console.log("[flip] firing", {
-        paneId: term?.activePane,
-        panes: term?.panes.length,
-      });
       if (term) {
         try {
           await api.flipParentSplit(term.activePane);
@@ -154,12 +173,13 @@
       return;
     }
 
-    // App-mod: Mac uses Cmd; Linux uses Ctrl+Shift.
+    // App-mod: Mac uses Cmd; Linux uses Ctrl+Shift. The sub-modifier (Mac's
+    // Shift, e.g. ⌘⇧D) maps to Alt on Linux (Ctrl+Shift+Alt+D), since Shift is
+    // already part of the Linux base — so Alt must NOT be excluded here, or
+    // every sub-modifier shortcut (split-vertical, extract, switch) is dead.
     const isAppMod = isMac
       ? e.metaKey && !e.ctrlKey && !e.altKey
-      : e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey;
-    // Inside the app-mod, Mac's "Shift" sub-modifier maps to Alt on Linux
-    // (since the base mod already includes Shift).
+      : e.ctrlKey && e.shiftKey && !e.metaKey;
     const subShift = isMac ? e.shiftKey : e.altKey;
 
     if (isAppMod) {
@@ -204,6 +224,19 @@
         e.preventDefault();
         e.stopPropagation();
         getPaneActions(term.activePane)?.clear();
+        return;
+      }
+      // Switch terminal card: Mac ⌘⇧→/←, Linux Ctrl+Shift+Alt+→/←. Wraps around.
+      if (subShift && (e.code === "ArrowRight" || e.code === "ArrowLeft")) {
+        e.preventDefault();
+        e.stopPropagation();
+        const list = $terminals;
+        if (list.length < 2) return;
+        const idx = list.findIndex((t) => t.id === $activeId);
+        const cur = idx < 0 ? 0 : idx;
+        const delta = e.code === "ArrowRight" ? 1 : -1;
+        const next = list[(cur + delta + list.length) % list.length];
+        await selectTerminal(next.id);
         return;
       }
       // Font zoom: Cmd+=/+, Cmd+-, Cmd+0 on Mac; same letters under Ctrl+Shift on Linux.
@@ -317,6 +350,7 @@
       onRequestClose={(id) =>
         (pending = { kind: "terminal", terminalId: id })}
       onOpenPreferences={() => (prefsOpen = true)}
+      onManageShortcuts={() => (shortcutsOpen = true)}
     />
   {/if}
   <section class="content">
@@ -371,3 +405,5 @@
 />
 
 <PreferencesDialog open={prefsOpen} onClose={() => (prefsOpen = false)} />
+
+<ShortcutsDialog open={shortcutsOpen} onClose={() => (shortcutsOpen = false)} />

@@ -25,12 +25,14 @@
 
   type ShortcutSpec = { mac: string; linux: string; label: string };
   const shortcuts: ShortcutSpec[] = [
+    { mac: "⌘N", linux: "Ctrl+Shift+N", label: "new window" },
     { mac: "⌘T", linux: "Ctrl+Shift+T", label: "new terminal" },
     { mac: "⌘D", linux: "Ctrl+Shift+D", label: "split vertical" },
     { mac: "⌘⇧D", linux: "Ctrl+Shift+Alt+D", label: "split horizontal" },
     { mac: "⌘/", linux: "Ctrl+Shift+/", label: "flip split" },
     { mac: "⌘⇧E", linux: "Ctrl+Shift+Alt+E", label: "extract pane" },
     { mac: "⌘K", linux: "Ctrl+Shift+K", label: "clear" },
+    { mac: "⌘⇧←/→", linux: "Ctrl+Shift+Alt+←/→", label: "switch terminal" },
     { mac: "⌘W", linux: "Ctrl+Shift+W", label: "close pane" },
     { mac: "⌘B", linux: "Ctrl+Shift+B", label: "toggle sidebar" },
   ];

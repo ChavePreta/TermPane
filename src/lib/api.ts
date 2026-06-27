@@ -47,7 +47,20 @@ export interface PaneStat {
 
 export const api = {
   listTerminals: () => invoke<TerminalSnapshot[]>("list_terminals"),
-  openTerminal: () => invoke<TerminalSnapshot>("open_terminal"),
+  openTerminal: (opts?: {
+    cwd?: string | null;
+    command?: string | null;
+    shell?: string | null;
+    name?: string | null;
+  }) =>
+    invoke<TerminalSnapshot>("open_terminal", {
+      cwd: opts?.cwd ?? null,
+      command: opts?.command ?? null,
+      shell: opts?.shell ?? null,
+      name: opts?.name ?? null,
+    }),
+  takeStartupCommand: (paneId: string) =>
+    invoke<string | null>("take_startup_command", { paneId }),
   closeTerminal: (terminalId: string) =>
     invoke<void>("close_terminal", { terminalId }),
   splitPane: (paneId: string, direction: SplitDir) =>

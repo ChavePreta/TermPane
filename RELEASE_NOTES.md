@@ -1,3 +1,65 @@
+# Release Notes — v0.3.1 (2026-06-26)
+
+A small, focused release: terminals now flag you when they need attention (great for long-running Claude Code sessions), you can save custom shortcuts to launch preconfigured terminals, open a second independent window, a long-standing wake-from-sleep rendering bug is fixed, and the terminal viewport gets a proper themed scrollbar.
+
+## ✨ New: Know when a terminal needs you
+
+When a program rings the bell — for example, Claude Code finishing its turn and waiting for your reply — TermPane now tells you which terminal it was. The card in the sidebar pulses for a few seconds as immediate feedback. And if it happened in a terminal you weren't looking at, the card keeps a small dot and a subtle highlight afterwards, so you can glance over and see exactly where attention is needed. The marker clears the instant you switch to that terminal.
+
+And when TermPane isn't the window you're looking at, it also pops a native macOS notification so you don't have to keep the app in view at all. Notifications are on by default and only fire once per terminal until you check on it — so a chatty program won't flood Notification Center. You can turn them off anytime in **Preferences → "Notify when a background terminal needs attention"**; the in-app card marker stays either way.
+
+**Granting permission on macOS.** The first time a background terminal needs you, macOS asks whether to let TermPane send notifications — click **Allow**. If you dismissed that prompt (it's only shown once) or want to change it later, open **System Settings → Notifications → TermPane** and switch on **Allow notifications**. TermPane re-checks this before every alert while it's off, so enabling it there takes effect immediately — no app restart needed. If TermPane isn't in that list yet, it simply hasn't tried to notify you once: trigger a bell with the window in the background (e.g. run `printf '\a'` and click away) to register it, then it'll appear.
+
+This works for anything that rings the terminal bell — a finished build, a test run, an alert in a TUI — with zero setup. TermPane also understands the `OSC 9` and `OSC 777` notification escape codes, so tools that use those (and Claude Code's `iterm2` channel) light up the card and pass their message straight into the notification.
+
+**Using Claude Code?** Claude notifies through the OS rather than the terminal, so it needs a quick one-time setup to light up the card — a small script plus two lines in your Claude hooks. The guide is in [`integrations/claude-code/`](integrations/claude-code/README.md). Once wired up, switch away from the Claude terminal and you'll see its card light up the moment Claude is waiting on you.
+
+## ✨ New: Open a second TermPane window
+
+You can now run more than one TermPane window at once. **File → New Window** (`⌘N` on macOS, `Ctrl+Shift+N` on Linux) opens a fresh, fully independent instance with its own set of terminals — handy for keeping unrelated projects in separate windows instead of one ever-growing sidebar.
+
+On a packaged macOS build the new window is launched through LaunchServices (`open -n`), so it registers as a proper separate instance of the app; in a dev build it simply re-execs the binary. Each window keeps its own terminals in memory. The two windows do share the same on-disk preferences (`preferences.json`) and label counter (`state.json`), written atomically — so nothing gets corrupted, though the last save wins if you change preferences in both.
+
+## 🐛 Fixed: Terminal pane going blank after the Mac wakes from sleep
+
+When macOS sheds the GPU's WebGL context — which it routinely does when the machine wakes from sleep or hibernation — the affected terminal pane could turn blank and stay that way until you resized the window or recreated the terminal.
+
+TermPane now recovers automatically:
+
+- It listens for the WebGL renderer's `onContextLoss` event.
+- On loss, it disposes the dead WebGL addon so `xterm.js` falls back to its **DOM renderer** — the pane keeps drawing instead of going blank — and re-fits the viewport so the column/row geometry stays correct across the renderer switch.
+- It then retries WebGL once the GPU has settled.
+
+Retries are bounded by a **consecutive**-failure counter that **resets on every successful load**. The practical difference matters: a laptop that sleeps and wakes night after night recovers cleanly each time and is never permanently knocked down to the slower DOM renderer, while a machine where WebGL is genuinely unavailable stops retrying after four attempts instead of churning forever.
+
+This is a deliberately more conservative successor to the `onContextLoss` handling that was **reverted in v0.3.0**: it leans on xterm's own DOM-renderer fallback rather than the canvas-renderer swap and texture-atlas clears that made rendering worse back then.
+
+## ✨ New: Themed vertical scrollbar in the terminal
+
+The terminal viewport now renders a styled 12px scrollbar instead of the platform default — a transparent track with a rounded thumb that brightens on hover. On macOS the native overlay scrollbar is explicitly disabled (`-webkit-appearance: none`) so the custom style actually renders, and the thumb is derived from the foreground color so it stays clearly visible in both the light and dark themes.
+
+## ✨ New: Switch between terminals from the keyboard
+
+You can now move between sidebar cards without the mouse. `⌘⇧→` jumps to the next terminal and `⌘⇧←` to the previous one (on Linux, `Ctrl+Shift+Alt+→` / `Ctrl+Shift+Alt+←`). The selection wraps around — pressing "next" on the last card loops back to the first — and does nothing when only one terminal is open. It drives the same activation path as clicking a card, so the backend's notion of the focused terminal stays in sync.
+
+## 🐛 Fixed: Updates not taking effect (stale cached frontend)
+
+This one was subtle and is the reason earlier builds "didn't change anything" after installing. WKWebView caches the bundled frontend per origin (`tauri://localhost`) and kept serving the previous build's HTML/CSS/JS after each update — so the binary shipped the new code, but the window rendered the old one indefinitely. (Running in dev never hit this because dev uses a different origin.)
+
+TermPane now records the running version in `state.json` and, on launch, compares it to the last one seen. When they differ, it purges the on-disk WebKit HTTP cache before the window loads, so the webview refetches the freshly embedded assets — on this update and every future one. An app stuck on an old cache repairs itself on the first launch after updating.
+
+The purge is surgical: it only removes the cache directory (`~/Library/Caches/com.termpane`). Your preferences — theme, sidebar width, font, and the rest — live in separate stores and are fully preserved across updates.
+
+## ✨ New: Custom terminal shortcuts
+
+Next to **+ New terminal** there's now a **+ custom** button. It drops down a list of named shortcuts you define — click one to open a terminal that's already set up the way you want: starting in a specific folder, running a command on launch, or using a particular shell.
+
+For example: a **claude dag** shortcut that runs `claude` in `~/Projetos/zumpost-dag`, a **shell dag** that just opens a shell there, or a **prod** that fires `ssh jonas@prod`. The command is typed into a normal interactive shell, so when it finishes — Claude exits, the SSH session ends — you're left at a prompt instead of a dead terminal. The new card is named after the shortcut (e.g. `claude dag#3`), so your launched terminals are easy to tell apart.
+
+Manage them from **+ custom → Manage shortcuts…**. To keep things tidy the editor is a compact list: each shortcut shows just its name, and you expand only the one you want to edit its directory, command, and shell. Everything is saved to disk and persists across launches and windows.
+
+---
+
 # Release Notes — v0.3.0 (2026-05-23)
 
 A feature release built around composition: you can now rearrange terminals into splits with a drag instead of starting over, flip a split's orientation without breaking and re-creating it, drive several panes at once, and use the app comfortably on Linux.

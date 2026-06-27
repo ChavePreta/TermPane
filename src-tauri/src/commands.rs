@@ -1,6 +1,7 @@
 use crate::model::{PaneId, SplitDir, TerminalId, TerminalSnapshot};
 use crate::preferences::{self, Preferences};
 use crate::pty::{self, PtyHandle};
+use crate::shortcuts;
 use crate::state::{AppState, CloseResult, ExtractResult, LayoutNode, MergeResult, PaneData, Terminal};
 use chrono::Utc;
 use std::collections::HashMap;
@@ -31,14 +32,19 @@ fn cwd_of_pid(pid: u32) -> Option<String> {
     Some(p.cwd()?.to_string_lossy().into_owned())
 }
 
-fn spawn_pty(app: &AppHandle, pane_id: PaneId, cwd: Option<&str>) -> anyhow::Result<Arc<PtyHandle>> {
+fn spawn_pty(
+    app: &AppHandle,
+    pane_id: PaneId,
+    cwd: Option<&str>,
+    shell: Option<&str>,
+) -> anyhow::Result<Arc<PtyHandle>> {
     let pty::SpawnResult {
         master,
         writer,
         reader,
         child,
         pid,
-    } = pty::spawn_shell(cwd)?;
+    } = pty::spawn_shell(cwd, shell)?;
     let reader_thread = pty::io::start_reader_thread(app.clone(), pane_id, reader);
     Ok(Arc::new(PtyHandle::new(
         master,
@@ -73,19 +79,80 @@ pub fn set_active_terminal(
 }
 
 #[tauri::command]
-pub fn open_terminal(app: AppHandle) -> Result<TerminalSnapshot, String> {
-    open_terminal_impl(&app).map_err(|e| e.to_string())
+pub fn open_terminal(
+    app: AppHandle,
+    cwd: Option<String>,
+    command: Option<String>,
+    shell: Option<String>,
+    name: Option<String>,
+) -> Result<TerminalSnapshot, String> {
+    open_terminal_impl(
+        &app,
+        cwd.as_deref(),
+        command.as_deref(),
+        shell.as_deref(),
+        name.as_deref(),
+    )
+    .map_err(|e| e.to_string())
 }
 
-pub fn open_terminal_impl(app: &AppHandle) -> anyhow::Result<TerminalSnapshot> {
+/// Expands a leading `~` / `~/` to the user's HOME. CommandBuilder::cwd takes a
+/// literal path, so without this `~/Projetos/...` would not resolve.
+fn expand_tilde(path: &str) -> String {
+    if path == "~" || path.starts_with("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            let home = home.to_string_lossy();
+            return format!("{}{}", home, &path[1..]);
+        }
+    }
+    path.to_string()
+}
+
+pub fn open_terminal_impl(
+    app: &AppHandle,
+    cwd: Option<&str>,
+    command: Option<&str>,
+    shell: Option<&str>,
+    name: Option<&str>,
+) -> anyhow::Result<TerminalSnapshot> {
     let state = app.state::<AppState>();
     let terminal_id = TerminalId::new();
     let pane_id = PaneId::new();
-    let label = state.allocate_label();
+    let prefix = name
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Term");
+    let label = state.allocate_label(prefix);
     let created_at = Utc::now();
 
-    let inherited_cwd = state.active_pane_shell_pid().and_then(cwd_of_pid);
-    let pty = spawn_pty(app, pane_id, inherited_cwd.as_deref())?;
+    let resolved_cwd = match cwd {
+        Some(c) => {
+            let expanded = expand_tilde(c);
+            // A bogus cwd (a typo, or an unsupported `~user/…`) would make the
+            // PTY spawn fail or land in a surprising directory with no feedback.
+            // Validate it, falling back to the active pane's cwd if it's not a
+            // real directory.
+            if std::path::Path::new(&expanded).is_dir() {
+                Some(expanded)
+            } else {
+                tracing::warn!("requested cwd is not a directory, ignoring: {expanded}");
+                state.active_pane_shell_pid().and_then(cwd_of_pid)
+            }
+        }
+        None => state.active_pane_shell_pid().and_then(cwd_of_pid),
+    };
+    let pty = spawn_pty(app, pane_id, resolved_cwd.as_deref(), shell)?;
+
+    // Stash the optional startup command instead of writing it now. The frontend
+    // flushes it (via take_startup_command) once its TerminalView has subscribed
+    // to this pane's output — Tauri doesn't replay events to a late listener, so
+    // writing it here could lose the command's echo and early output.
+    if let Some(cmd) = command {
+        let cmd = cmd.trim();
+        if !cmd.is_empty() {
+            pty.set_startup_command(cmd.to_string());
+        }
+    }
 
     let mut panes = HashMap::new();
     panes.insert(
@@ -109,6 +176,18 @@ pub fn open_terminal_impl(app: &AppHandle) -> anyhow::Result<TerminalSnapshot> {
 
     let _ = app.emit("terminal:added", snapshot.clone());
     Ok(snapshot)
+}
+
+/// Pops the one-shot startup command for a pane (set by a custom shortcut),
+/// returning `None` if there is none. The frontend calls this once its
+/// TerminalView has subscribed to the pane's output, then writes the command.
+#[tauri::command]
+pub fn take_startup_command(
+    state: tauri::State<'_, AppState>,
+    pane_id: String,
+) -> Result<Option<String>, String> {
+    let pid = parse_pane_id(&pane_id)?;
+    Ok(state.pty_of(pid).and_then(|p| p.take_startup_command()))
 }
 
 #[tauri::command]
@@ -143,7 +222,8 @@ pub fn split_pane(
     };
     let new_pane = PaneId::new();
     let inherited_cwd = state.shell_pid_of(pid).and_then(cwd_of_pid);
-    let new_pty = spawn_pty(&app, new_pane, inherited_cwd.as_deref()).map_err(|e| e.to_string())?;
+    let new_pty =
+        spawn_pty(&app, new_pane, inherited_cwd.as_deref(), None).map_err(|e| e.to_string())?;
     let terminal_id = state
         .split(pid, new_pane, new_pty, dir)
         .ok_or_else(|| format!("pane {} not found", pid))?;
@@ -369,7 +449,7 @@ pub fn extract_pane(
 ) -> Result<TerminalSnapshot, String> {
     let pid = parse_pane_id(&pane_id)?;
     let new_tid = TerminalId::new();
-    let label = state.allocate_label();
+    let label = state.allocate_label("Term");
     let ExtractResult { source_terminal_id } = state
         .extract_pane(pid, new_tid, label)
         .ok_or_else(|| {
@@ -424,10 +504,26 @@ pub fn set_preferences(app: AppHandle, prefs: Preferences) -> Result<Preferences
     Ok(sanitized)
 }
 
+#[tauri::command]
+pub fn get_shortcuts() -> shortcuts::Shortcuts {
+    shortcuts::load()
+}
+
+#[tauri::command]
+pub fn set_shortcuts(
+    app: AppHandle,
+    shortcuts: shortcuts::Shortcuts,
+) -> Result<shortcuts::Shortcuts, String> {
+    let sanitized = shortcuts::sanitize(shortcuts);
+    shortcuts::save(&sanitized).map_err(|e| format!("save failed: {e}"))?;
+    let _ = app.emit("shortcuts:changed", sanitized.clone());
+    Ok(sanitized)
+}
+
 /// Called once from the Tauri Builder `setup` hook.
 /// Creates the first terminal (Term#1) and starts the foreground monitor.
 pub fn bootstrap(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    open_terminal_impl(&app)?;
+    open_terminal_impl(&app, None, None, None, None)?;
     crate::monitor::start(app);
     Ok(())
 }

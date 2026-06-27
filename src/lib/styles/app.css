@@ -149,8 +149,15 @@ button {
   border-top: 1px solid var(--border);
 }
 
+.footer-actions {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
 .new-terminal-btn {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: 8px 10px;
   border-radius: 6px;
   color: var(--fg-muted);

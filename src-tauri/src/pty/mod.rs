@@ -15,6 +15,9 @@ pub struct PtyHandle {
     writer: Mutex<Box<dyn Write + Send>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
     pub shell_pid: Option<u32>,
+    // One-shot command run after the frontend subscribes to this pane's output
+    // (taken via take_startup_command). None for splits and plain terminals.
+    startup_command: Mutex<Option<String>>,
     _reader_thread: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -31,6 +34,7 @@ impl PtyHandle {
             writer: Mutex::new(writer),
             child: Mutex::new(child),
             shell_pid,
+            startup_command: Mutex::new(None),
             _reader_thread: Mutex::new(Some(reader_thread)),
         }
     }
@@ -39,6 +43,14 @@ impl PtyHandle {
         let mut w = self.writer.lock();
         w.write_all(bytes)?;
         w.flush()
+    }
+
+    pub fn set_startup_command(&self, cmd: String) {
+        *self.startup_command.lock() = Some(cmd);
+    }
+
+    pub fn take_startup_command(&self) -> Option<String> {
+        self.startup_command.lock().take()
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> anyhow::Result<()> {

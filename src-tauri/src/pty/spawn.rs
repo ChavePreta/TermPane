@@ -10,8 +10,9 @@ pub struct SpawnResult {
     pub pid: Option<u32>,
 }
 
-/// Spawns the user's default shell ($SHELL, falling back to /bin/zsh) attached to a PTY.
-pub fn spawn_shell(cwd: Option<&str>) -> anyhow::Result<SpawnResult> {
+/// Spawns a shell attached to a PTY. Uses `shell_override` if given and non-empty,
+/// otherwise the user's default shell ($SHELL, falling back to /bin/zsh).
+pub fn spawn_shell(cwd: Option<&str>, shell_override: Option<&str>) -> anyhow::Result<SpawnResult> {
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -22,7 +23,11 @@ pub fn spawn_shell(cwd: Option<&str>) -> anyhow::Result<SpawnResult> {
         })
         .map_err(|e| anyhow::anyhow!("openpty failed: {e}"))?;
 
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let shell = shell_override
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string()));
     let mut cmd = CommandBuilder::new(&shell);
     cmd.arg("-l");
 

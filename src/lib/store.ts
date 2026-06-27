@@ -1,5 +1,5 @@
-import { writable, derived } from "svelte/store";
-import type { PaneStat, TerminalSnapshot } from "./api";
+import { writable, derived, get } from "svelte/store";
+import { api, type PaneStat, type TerminalSnapshot } from "./api";
 
 function createTerminalsStore() {
   const { subscribe, update, set } = writable<TerminalSnapshot[]>([]);
@@ -79,6 +79,24 @@ function createTerminalsStore() {
 
 export const terminals = createTerminalsStore();
 export const activeId = writable<string | null>(null);
+
+/**
+ * Switch the active terminal. Sets `activeId` optimistically for instant
+ * feedback, then syncs the backend, reverting on failure so the frontend's
+ * active card and the backend's `AppState.active` can't diverge (a stale
+ * backend active would make the next `Cmd+T` inherit the wrong cwd). Shared by
+ * sidebar clicks and the keyboard switch-terminal shortcut.
+ */
+export async function selectTerminal(id: string): Promise<void> {
+  const prev = get(activeId);
+  activeId.set(id);
+  try {
+    await api.setActiveTerminal(id);
+  } catch (e) {
+    console.error("setActiveTerminal:", e);
+    if (get(activeId) === id) activeId.set(prev);
+  }
+}
 
 export const activeTerminal = derived(
   [terminals, activeId],

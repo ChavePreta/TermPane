@@ -3,6 +3,7 @@
   import type { TerminalSnapshot } from "../api";
   import { api } from "../api";
   import { aggregateForeground, aggregateMemory, formatBytes } from "../store";
+  import { attentionTerminals } from "../attention";
 
   type Props = {
     terminal: TerminalSnapshot;
@@ -21,6 +22,10 @@
 
   let foreground = $derived(aggregateForeground(terminal));
   let memoryLabel = $derived(formatBytes(aggregateMemory(terminal)));
+  let attentionEntry = $derived($attentionTerminals.get(terminal.id));
+  let pulseKey = $derived(attentionEntry?.nonce);
+  let showDot = $derived(attentionEntry !== undefined);
+  let persistent = $derived(!!attentionEntry?.persistent && !active);
 
   function formatTime(iso: string): string {
     const d = new Date(iso);
@@ -91,6 +96,7 @@
   class:active
   class:dragging
   class:editing
+  class:attention={persistent}
   data-card-id={terminal.id}
   role="button"
   tabindex="0"
@@ -100,6 +106,16 @@
   ondblclick={startEdit}
   onkeydown={handleKey}
 >
+  {#if showDot}
+    {#key pulseKey}
+      <span
+        class="attention-dot"
+        class:persistent
+        title="Activity — waiting for you"
+        aria-hidden="true"
+      ></span>
+    {/key}
+  {/if}
   {#if editing}
     <input
       class="card-edit"
@@ -172,6 +188,42 @@
 
   .card.editing {
     cursor: text;
+  }
+
+  .card.attention {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+
+  .attention-dot {
+    flex-shrink: 0;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    /* Hidden by default; the pulse animation makes it visible for ~3s. A
+       persistent dot (unattended terminal) overrides this to stay visible. */
+    opacity: 0;
+    /* Pulse three times (~3s) on each new bell. */
+    animation: attention-pulse 1s ease-in-out 3;
+  }
+
+  .attention-dot.persistent {
+    opacity: 1;
+  }
+
+  @keyframes attention-pulse {
+    0% {
+      opacity: 1;
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 65%, transparent);
+    }
+    70% {
+      opacity: 1;
+      box-shadow: 0 0 0 6px transparent;
+    }
+    100% {
+      opacity: 1;
+      box-shadow: 0 0 0 0 transparent;
+    }
   }
 
   .card-text {
