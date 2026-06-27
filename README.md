@@ -9,7 +9,7 @@ that turns a wall of windows into a single, glanceable workspace. Every shell
 you open lives as a card in the sidebar — named, renameable, and reorderable —
 with the currently running command shown right next to its label.
 
-<img src="https://termpane.com/assets/screenshot-v0.2.0.png" alt="TermPane Screenshot" width="600" style="border: 1px solid black;" />
+<img src="https://termpane.com/assets/screenshot-v0.3.1.png" alt="TermPane Screenshot" width="600" style="border: 1px solid black;" />
 
 ---
 
@@ -17,7 +17,7 @@ with the currently running command shown right next to its label.
 
 ### Native & lightweight
 - **Native Rust + Tauri 2 binary** — small DMG, single-digit-percent CPU at rest. No Chromium bundle, no Electron bloat.
-- **WebGL-accelerated rendering** via `xterm.js` for buttery scrolling and redraws on large outputs.
+- **WebGL-accelerated rendering** via `xterm.js` for buttery scrolling and redraws on large outputs, with automatic fallback to the DOM renderer if the GPU context drops (e.g. when the Mac wakes from sleep) so a pane never goes blank.
 - **Real PTYs** powered by `portable-pty` (the same library WezTerm uses). No emulation tricks — your shell is your shell.
 
 ### Full shell compatibility
@@ -32,13 +32,21 @@ with the currently running command shown right next to its label.
 - **Live foreground-command tracking** — the running process appears in italic, muted color, next to the terminal label (`Term#1 — npm`).
 - **Multi-pane aggregation:** all running commands joined by `/`, truncated with `…` when too long.
 - **Hover reveals** open timestamp and a close button.
+- **Attention indicator** — when a program rings the bell (or sends an `OSC 9` / `OSC 777` notification), its card pulses; if it wasn't the card you were viewing, it keeps a dot + highlight until you switch to it. When TermPane isn't focused, it also fires a native OS notification (on by default; toggle in Preferences). See [Get notified when a terminal needs you](#get-notified-when-a-terminal-needs-you).
 - **Confirmation dialog** before destroying a terminal, with a heads-up if a process is still running.
+
+### Get notified when a terminal needs you
+- **Bell-aware sidebar.** Any program that rings the terminal bell (`\x07`) — a finished `make`, a test run, an alert in a TUI — pulses its sidebar card. If it's a card you weren't looking at, the card keeps a dot + accent highlight until you open it. **Zero config.**
+- **OS notifications when you're away.** If TermPane isn't the focused window, the same event raises a native macOS notification (throttled to one per terminal until you visit it). On by default; turn it off in **Preferences → "Notify when a background terminal needs attention."**
+- **`OSC 9` / `OSC 777` support.** Tools that request notifications via these standard escape sequences (iTerm2/Ghostty/VS Code style) light up the card too, and their message text rides along to the OS notification.
+- **Claude Code.** Claude notifies through the OS rather than the terminal bell, so it needs a one-time hook to light up the card. Setup (a small versioned script + two hook lines): [`integrations/claude-code/`](integrations/claude-code/README.md).
 
 ### Customize your workspace
 - **Rename any card** with a double-click (or F2).
 - **Drag-and-drop reorder** — grab a card, drop where you want, blue indicator shows the target slot.
+- **Custom terminal shortcuts** — a **+ custom** button beside **+ New terminal** opens a dropdown of named shortcuts you define, each with an optional starting directory, startup command, and shell. Click one to launch a preconfigured terminal — e.g. open Claude in a project folder, or SSH into a host. Manage them in a built-in editor; they persist across launches.
 - **Always-on-top pin** in the sidebar header — keep TermPane floating over your editor while you debug. Persists across launches.
-- **Preferences dialog** for font family, font size (8–32 px), line height, and cursor blink. Live-updates every open terminal.
+- **Preferences dialog** for font family, font size (8–32 px), line height, cursor blink, and bell notifications. Live-updates every open terminal.
 
 ### Splits, the way you want them
 - **Horizontal split** (`⌘D`) — panes side by side.
@@ -94,12 +102,14 @@ with the currently running command shown right next to its label.
 
 | Action                                    | macOS               | Linux                  |
 | ----------------------------------------- | ------------------- | ---------------------- |
+| New window (separate instance)            | `⌘N`                | `Ctrl+Shift+N`         |
 | New terminal                              | `⌘T`                | `Ctrl+Shift+T`         |
 | Close pane / terminal (with confirmation) | `⌘W`                | `Ctrl+Shift+W`         |
 | Split horizontal / vertical               | `⌘D` / `⌘⇧D`        | `Ctrl+Shift+D` / `Ctrl+Shift+Alt+D` |
 | Flip orientation of parent split          | `⌘/`                | `Ctrl+Shift+/`         |
 | Extract active pane to new card           | `⌘⇧E`               | `Ctrl+Shift+Alt+E`     |
 | Clear viewport + scrollback               | `⌘K`                | `Ctrl+Shift+K`         |
+| Next / previous terminal card             | `⌘⇧→` / `⌘⇧←`       | `Ctrl+Shift+Alt+→` / `Ctrl+Shift+Alt+←` |
 | Toggle sidebar                            | `⌘B`                | `Ctrl+Shift+B`         |
 | Font zoom in / out / reset                | `⌘=` / `⌘-` / `⌘0`  | `Ctrl+Shift+=` / `Ctrl+Shift+-` / `Ctrl+Shift+0` |
 | Rename active card                        | Double-click / `F2` | Double-click / `F2`    |

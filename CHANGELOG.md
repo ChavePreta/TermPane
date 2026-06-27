@@ -5,6 +5,125 @@ All notable changes to TermPane are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-06-26
+
+### Fixed
+
+- **Blank terminal pane after waking the Mac from sleep.** When macOS tears
+  down the GPU's WebGL context on wake from sleep/hibernation, the affected
+  pane could go blank until it was resized or recreated. TermPane now listens
+  for the WebGL renderer's context-loss event, disposes the dead addon so
+  xterm falls back to its DOM renderer (the pane keeps drawing), re-fits the
+  viewport, and retries WebGL once the GPU settles. Retries are gated by a
+  **consecutive**-failure counter that resets on every successful load, so a
+  long-lived pane that recovers cleanly across many sleep/wake cycles is never
+  permanently demoted to the DOM renderer, while a genuinely unavailable GPU
+  stops churning after four attempts instead of looping forever. This is a
+  fresh, more conservative take on the `onContextLoss` handling that was
+  reverted in 0.3.0 — it relies on xterm's own DOM-renderer fallback rather
+  than the canvas-renderer swap and atlas clears that degraded rendering then.
+
+- **Stale frontend served after an app update.** WKWebView caches the bundled
+  frontend per origin and kept serving the previous build's HTML/CSS/JS after
+  an update, so changes (e.g. the new scrollbar) never appeared even though the
+  binary shipped them. On launch TermPane now compares the running version to
+  the last one recorded in `state.json` and, on a mismatch, purges the on-disk
+  WebKit HTTP cache before the webview loads, so it refetches the freshly
+  embedded assets. The purge targets only the cache directory
+  (`~/Library/Caches/com.termpane`); localStorage lives in a separate store, so
+  user preferences (theme, sidebar width, …) are preserved across updates.
+
+### Added
+
+- **Open a second window (separate instance).** A new **File → New Window**
+  menu item (`⌘N` on macOS, `Ctrl+Shift+N` on Linux) launches an independent
+  TermPane instance with its own terminals. On a packaged macOS build it goes
+  through LaunchServices (`open -n <bundle>`) so the new instance registers as
+  a proper separate app; in dev / unpackaged builds it re-execs the binary via
+  `std::env::current_exe()`. Each instance owns its own in-memory workspace,
+  while sharing the on-disk `state.json` / `preferences.json` (atomic writes,
+  so no corruption — last writer wins). Backend: `menu::spawn_new_instance`,
+  wired through `on_menu_event` in `lib.rs`.
+
+- **Styled vertical scrollbar in the terminal viewport.** Terminal panes now
+  render a themed 12px scrollbar (transparent track, rounded thumb derived from
+  the foreground color that brightens on hover) instead of the platform
+  default. On macOS the native overlay scrollbar is disabled
+  (`-webkit-appearance: none`) so the custom style actually renders, and the
+  thumb keeps usable contrast in both light and dark themes.
+
+- **Switch terminal cards from the keyboard.** New shortcuts cycle the active
+  card without reaching for the mouse: `⌘⇧→` / `⌘⇧←` on macOS, and
+  `Ctrl+Shift+Alt+→` / `Ctrl+Shift+Alt+←` on Linux (following the established
+  app-mod convention). Selection wraps around at both ends and is a no-op when
+  fewer than two terminals are open. Routes through the same `setActiveTerminal`
+  path as clicking a card, so backend focus state stays in sync.
+
+- **Attention indicator when a terminal rings the bell.** When a program emits
+  the terminal bell (`\x07`) — e.g. Claude Code finishing a turn and waiting for
+  input — the owning sidebar card pulses a dot for ~3s as immediate feedback.
+  If the bell rang on a terminal you weren't watching (not the active card, or
+  the window was unfocused), the card additionally keeps a **persistent dot plus
+  a faint accent highlight** until you open that terminal, so you can tell at a
+  glance which one wants you. When TermPane itself isn't the focused window, it
+  also fires a **native OS notification** (macOS Notification Center via
+  `tauri-plugin-notification`), throttled to one per terminal until you visit
+  it. The notification is **on by default** and can be turned off in Preferences
+  (the `bellNotifications` pref); the card pulse/badge is always shown
+  regardless. Implementation: `term.onBell` in `TerminalView` routes to
+  `signalBell` in the new `src/lib/attention.ts` store (ephemeral per-terminal
+  `{ nonce, persistent }` map, like broadcast state); the card reads it in
+  `TerminalCard`; `+page.svelte` clears it on activation and on window refocus.
+  On macOS the OS notification needs the standard notification permission:
+  TermPane requests it on the first background alert (`ensurePermission()` in
+  `attention.ts`) and, while still ungranted, re-checks `isPermissionGranted()`
+  before every later alert — so granting it afterwards in **System Settings →
+  Notifications → TermPane** takes effect with no restart (the prompt itself is
+  shown at most once). The app only appears in that Notifications list after it
+  has attempted to notify at least once.
+
+- **`OSC 9` / `OSC 777` desktop-notification sequences.** TermPane now parses the
+  iTerm2/Ghostty/VS Code-style notification escape codes (`ESC ] 9 ; msg` and
+  `ESC ] 777 ; notify ; title ; body`) and routes them through the same
+  attention path as the bell, carrying the tool's message into the OS
+  notification. Lets any tool that emits these — including Claude Code's
+  `iterm2` notification channel — light up a card with no hook. Implementation:
+  `term.parser.registerOscHandler(9 / 777, …)` in `TerminalView` →
+  `signalNotification` in `attention.ts` (OSC 9 skips ConEmu's `9;4` progress
+  sub-command).
+
+- **Claude Code notification bridge (`integrations/claude-code/`).** A versioned
+  hook script (`termpane-bell.sh`) plus a setup guide. Claude Code notifies
+  through the OS rather than ringing the terminal bell, so it doesn't reach
+  TermPane on its own; the hook rings the bell on the Claude process's
+  controlling tty (walking the process tree, since hooks run detached from
+  `/dev/tty`), scoped to TermPane via `TERM_PROGRAM`. Wired into Claude's `Stop`
+  and `Notification` hooks. README documents both the hook and the simpler
+  `preferredNotifChannel: "terminal_bell"` alternative.
+
+- **Custom terminal shortcuts (`+ custom`).** A new **+ custom** button in the
+  sidebar footer opens a dropdown of user-defined named shortcuts, each opening a
+  terminal pre-configured with an optional working directory, startup command,
+  and shell override. Clicking a shortcut spawns the terminal — the command is
+  typed into the interactive login shell (sent from the frontend once the pane
+  has subscribed to output, so its echo and early output aren't lost), so the
+  terminal stays alive when it exits (e.g. an `ssh` session disconnecting drops
+  you back to a prompt) — and the new card is labelled `<shortcut name>#<seq>`
+  instead of `Term#<seq>`,
+  reusing the same label counter. A **Manage shortcuts…** item opens a CRUD editor
+  rendered as an accordion: each row shows only the name, expand it to edit
+  directory / command / shell, with add/remove. Shortcuts persist in
+  `shortcuts.json` (atomic write; `sanitize` trims names, drops nameless items,
+  collapses blank optionals). A leading `~` in the directory is expanded to
+  `$HOME`, and a path that isn't an existing directory is ignored (falls back to
+  the active pane's cwd). Backend: new `shortcuts.rs` module + `get_shortcuts` /
+  `set_shortcuts` commands (emit `shortcuts:changed`); `open_terminal` gained
+  optional `cwd` / `command` / `shell` / `name` args; the startup command is
+  stashed on the PTY and flushed via a new `take_startup_command` command;
+  `spawn_shell` gained a shell override; `allocate_label` takes a label prefix
+  and persists the counter under a serialized lock. Frontend: `src/lib/shortcuts.ts`
+  store, `CustomTerminalMenu.svelte` dropdown, `ShortcutsDialog.svelte` editor.
+
 ## [0.3.0] - 2026-05-23
 
 ### Added
@@ -161,6 +280,7 @@ Initial release.
 - macOS-first build (`.dmg` + `.app`); Linux `.deb` + `.AppImage` via local
   build only.
 
+[0.3.1]: https://github.com/ChavePreta/TermPane/releases/tag/v0.3.1
 [0.3.0]: https://github.com/ChavePreta/TermPane/releases/tag/v0.3.0
 [0.2.2]: https://github.com/ChavePreta/TermPane/releases/tag/v0.2.2
 [0.2.1]: https://github.com/ChavePreta/TermPane/releases/tag/v0.2.1

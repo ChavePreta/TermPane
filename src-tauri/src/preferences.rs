@@ -17,6 +17,8 @@ pub struct Preferences {
     pub line_height: f32,
     #[serde(default = "default_cursor_blink")]
     pub cursor_blink: bool,
+    #[serde(default = "default_bell_notifications")]
+    pub bell_notifications: bool,
 }
 
 fn default_schema() -> u32 {
@@ -34,6 +36,9 @@ fn default_line_height() -> f32 {
 fn default_cursor_blink() -> bool {
     true
 }
+fn default_bell_notifications() -> bool {
+    true
+}
 
 impl Default for Preferences {
     fn default() -> Self {
@@ -43,6 +48,7 @@ impl Default for Preferences {
             font_size: default_font_size(),
             line_height: default_line_height(),
             cursor_blink: default_cursor_blink(),
+            bell_notifications: default_bell_notifications(),
         }
     }
 }

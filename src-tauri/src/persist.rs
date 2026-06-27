@@ -8,6 +8,10 @@ const APP_DIR: &str = "TermPane";
 pub struct PersistedState {
     pub schema_version: u32,
     pub next_label_index: u32,
+    // App version that last ran. Used to detect upgrades and flush the
+    // WKWebView cache, which otherwise serves a stale frontend after updates.
+    #[serde(default)]
+    pub app_version: String,
 }
 
 pub fn state_path() -> Option<PathBuf> {

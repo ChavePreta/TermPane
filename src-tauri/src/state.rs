@@ -3,7 +3,7 @@ use crate::model::{
 };
 use crate::pty::SharedPty;
 use chrono::{DateTime, Utc};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 
 /// Árvore de layout interna — folhas referenciam PaneIds, dados ficam num HashMap separado.
@@ -259,6 +259,11 @@ pub struct Inner {
 
 pub struct AppState {
     inner: RwLock<Inner>,
+    // Serializes state.json writes so concurrent terminal creation can't lose a
+    // label-index increment via interleaved load-modify-save. (Cross-process —
+    // a second window — is still last-writer-wins; the atomic rename keeps that
+    // from corrupting the file.)
+    persist_lock: Mutex<()>,
 }
 
 impl AppState {
@@ -270,24 +275,34 @@ impl AppState {
                 active: None,
                 next_label_index: restored.next_label_index,
             }),
+            persist_lock: Mutex::new(()),
         }
     }
 
-    pub fn allocate_label(&self) -> String {
-        let mut g = self.inner.write();
-        g.next_label_index += 1;
-        let idx = g.next_label_index;
-        drop(g);
-        let snapshot = crate::persist::PersistedState {
-            schema_version: 1,
-            next_label_index: idx,
+    pub fn allocate_label(&self, prefix: &str) -> String {
+        let idx = {
+            let mut g = self.inner.write();
+            g.next_label_index += 1;
+            g.next_label_index
         };
-        std::thread::spawn(move || {
-            if let Err(e) = crate::persist::save(&snapshot) {
-                tracing::debug!("persist save failed: {e}");
-            }
-        });
-        format!("Term#{}", idx)
+        self.persist_label_index();
+        format!("{}#{}", prefix, idx)
+    }
+
+    /// Persists the label counter to state.json. Serialized via `persist_lock`,
+    /// and always writes the *live* in-memory index (the monotonic max) rather
+    /// than a captured value, so two concurrent opens converge on the same final
+    /// value instead of one clobbering the other's increment. Load-modify-save
+    /// preserves fields this call site doesn't own (e.g. app_version).
+    fn persist_label_index(&self) {
+        let _persist = self.persist_lock.lock();
+        let current = self.inner.read().next_label_index;
+        let mut snapshot = crate::persist::load();
+        snapshot.schema_version = 1;
+        snapshot.next_label_index = current;
+        if let Err(e) = crate::persist::save(&snapshot) {
+            tracing::debug!("persist save failed: {e}");
+        }
     }
 
     pub fn insert(&self, terminal: Terminal) {

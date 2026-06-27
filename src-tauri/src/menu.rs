@@ -1,5 +1,8 @@
-use tauri::menu::{AboutMetadataBuilder, Menu, PredefinedMenuItem, Submenu};
+use tauri::menu::{AboutMetadataBuilder, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Runtime};
+
+/// Menu id for "New Window" — matched in `lib.rs`'s `on_menu_event`.
+pub const NEW_WINDOW_ID: &str = "new_window";
 
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let pkg = app.package_info();
@@ -33,6 +36,16 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &PredefinedMenuItem::quit(app, None)?,
         ],
     )?;
+
+    // On Linux, plain Ctrl+letter is reserved for PTY control bytes, so the
+    // app-mod is Ctrl+Shift+letter. On macOS, Cmd+N never reaches the PTY.
+    #[cfg(target_os = "macos")]
+    let new_window_accel = Some("Cmd+N");
+    #[cfg(not(target_os = "macos"))]
+    let new_window_accel = Some("Ctrl+Shift+N");
+    let new_window =
+        MenuItem::with_id(app, NEW_WINDOW_ID, "New Window", true, new_window_accel)?;
+    let file_submenu = Submenu::with_items(app, "File", true, &[&new_window])?;
 
     let edit_submenu = Submenu::with_items(
         app,
@@ -72,10 +85,51 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         )?;
         return Menu::with_items(
             app,
-            &[&app_submenu, &edit_submenu, &view_submenu, &window_submenu],
+            &[
+                &app_submenu,
+                &file_submenu,
+                &edit_submenu,
+                &view_submenu,
+                &window_submenu,
+            ],
         );
     }
 
     #[cfg(not(target_os = "macos"))]
-    Menu::with_items(app, &[&app_submenu, &edit_submenu, &window_submenu])
+    Menu::with_items(
+        app,
+        &[&app_submenu, &file_submenu, &edit_submenu, &window_submenu],
+    )
+}
+
+/// Launch a second, independent TermPane process. On a bundled macOS app we go
+/// through LaunchServices (`open -n`) so the new instance is registered as a
+/// proper separate app; in dev / non-bundled builds we re-exec the binary
+/// directly. Each instance gets its own in-memory workspace.
+pub fn spawn_new_instance() {
+    let Ok(exe) = std::env::current_exe() else {
+        tracing::warn!("new window: current_exe() unavailable");
+        return;
+    };
+
+    #[cfg(target_os = "macos")]
+    {
+        // exe = <App>.app/Contents/MacOS/<bin>; the .app bundle is 3 levels up.
+        if let Some(bundle) = exe.ancestors().nth(3) {
+            if bundle.extension().is_some_and(|e| e == "app") {
+                if let Err(e) = std::process::Command::new("open")
+                    .arg("-n")
+                    .arg(bundle)
+                    .spawn()
+                {
+                    tracing::warn!("new window: `open -n` failed: {e}");
+                }
+                return;
+            }
+        }
+    }
+
+    if let Err(e) = std::process::Command::new(&exe).spawn() {
+        tracing::warn!("new window: re-exec failed: {e}");
+    }
 }

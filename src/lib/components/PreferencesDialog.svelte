@@ -12,6 +12,7 @@
   let fontSize = $state(13);
   let lineHeight = $state(1.15);
   let cursorBlink = $state(true);
+  let bellNotifications = $state(true);
   let saving = $state(false);
   let error = $state<string | null>(null);
 
@@ -22,6 +23,7 @@
       fontSize = p.fontSize;
       lineHeight = p.lineHeight;
       cursorBlink = p.cursorBlink;
+      bellNotifications = p.bellNotifications;
       error = null;
     }
   });
@@ -35,6 +37,7 @@
       fontSize: clamp(Math.round(fontSize), 8, 32),
       lineHeight: clamp(lineHeight, 1.0, 2.0),
       cursorBlink,
+      bellNotifications,
     };
     try {
       await savePreferences(next);
@@ -57,6 +60,7 @@
     fontSize = 13;
     lineHeight = 1.15;
     cursorBlink = true;
+    bellNotifications = true;
   }
 
   function handleKey(e: KeyboardEvent) {
@@ -130,6 +134,18 @@
           Blinking cursor
         </label>
       </div>
+
+      <div class="field checkbox">
+        <label>
+          <input type="checkbox" bind:checked={bellNotifications} />
+          Notify when a background terminal needs attention
+        </label>
+      </div>
+      <small>
+        When a terminal rings the bell or sends a notification, its card lights
+        up; if TermPane isn't focused, a system notification fires too — e.g.
+        when Claude finishes and waits for you.
+      </small>
 
       {#if error}
         <p class="error">{error}</p>

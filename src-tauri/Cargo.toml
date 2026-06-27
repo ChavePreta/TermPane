@@ -1,7 +1,7 @@
 [package]
 name = "termpane"
-version = "0.3.0"
-description = "Gerenciador de terminais embutidos — Tauri + portable-pty"
+version = "0.3.1"
+description = "TermPane — native, lightweight terminal manager (Tauri + portable-pty)"
 authors = ["jonas@silveira.eti.br"]
 edition = "2021"
 
@@ -31,6 +31,7 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 base64 = "0.22"
+tauri-plugin-notification = "2"
 
 [profile.release]
 panic = "abort"

@@ -8,6 +8,7 @@
   import { resolvedTheme, xtermThemes } from "../theme";
   import { preferences } from "../preferences";
   import { registerPaneActions, unregisterPaneActions } from "../paneActions";
+  import { signalBell, signalNotification } from "../attention";
   import { broadcastEnabled } from "../broadcast";
   import { dropTargetPaneId } from "../dragState";
   import { get } from "svelte/store";
@@ -37,6 +38,8 @@
   let resizeTimer: ReturnType<typeof setTimeout> | null = null;
   let lastCols = 0;
   let lastRows = 0;
+  let webglFailures = 0;
+  let webglRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
   onMount(async () => {
     const prefs = get(preferences);
@@ -78,11 +81,7 @@
     container.addEventListener("wheel", onWheel, { passive: false });
     unlistenWheel = () => container.removeEventListener("wheel", onWheel);
 
-    try {
-      term.loadAddon(new WebglAddon());
-    } catch (e) {
-      console.warn("WebGL addon failed:", e);
-    }
+    loadWebgl();
 
     term.onData((data) => {
       if (get(broadcastEnabled).has(terminalId)) {
@@ -96,6 +95,30 @@
       }
     });
 
+    // A program rang the bell (\x07) — e.g. Claude finished and is waiting for
+    // input. Flag the owning card unless the user is already watching it.
+    term.onBell(() => signalBell(terminalId));
+
+    // Desktop-notification escape sequences (iTerm2 OSC 9, OSC 777) — the
+    // convention many CLI tools (and Claude Code's iterm2 channel) use to ask
+    // for a notification. Treat them like a bell, carrying the tool's message.
+    term.parser.registerOscHandler(9, (data) => {
+      // ConEmu repurposes OSC 9;4;<state>;<progress> for progress reporting — not
+      // a notification. Match that grammar (a digit right after "4;") so we don't
+      // also swallow an iTerm2 notification whose text merely begins with "4;".
+      if (!/^4;\d/.test(data)) signalNotification(terminalId, data);
+      return true;
+    });
+    term.parser.registerOscHandler(777, (data) => {
+      const parts = data.split(";");
+      if (parts[0] === "notify") {
+        const title = parts[1] ?? "";
+        const body = parts.slice(2).join(";");
+        signalNotification(terminalId, body || title);
+      }
+      return true;
+    });
+
     unlistenOutput = await onPtyOutput(paneId, (chunk) => {
       term?.write(chunk);
     });
@@ -103,6 +126,16 @@
     unlistenExit = await onPtyExit(paneId, () => {
       term?.write("\r\n\x1b[2;37m[process exited]\x1b[0m\r\n");
     });
+
+    // Flush a one-shot startup command (custom-shortcut "command") now that the
+    // output listener above is attached, so the command's echo and early output
+    // aren't lost. Returns null for splits and plain terminals.
+    try {
+      const startup = await api.takeStartupCommand(paneId);
+      if (startup) await api.writeInput(paneId, `${startup}\n`);
+    } catch (err) {
+      console.error("startup command:", err);
+    }
 
     await tick();
     fitNow();
@@ -143,9 +176,47 @@
     unsubPrefs?.();
     resizeObs?.disconnect();
     if (resizeTimer) clearTimeout(resizeTimer);
+    if (webglRetryTimer) clearTimeout(webglRetryTimer);
     term?.dispose();
     term = null;
   });
+
+  function loadWebgl() {
+    // Bail after repeated consecutive failures — stay on the DOM renderer
+    // instead of churning through addons forever. webglFailures resets on a
+    // successful load, so this catches a tight failure loop, not the occasional
+    // sleep/wake recovery.
+    if (!term || webglFailures >= 4) return;
+    let addon: WebglAddon | null = null;
+    try {
+      addon = new WebglAddon();
+      addon.onContextLoss(() => {
+        // The GPU context was torn down — most often when the machine wakes
+        // from sleep. xterm waits ~3s for the browser to restore it before
+        // firing this; once it does, drop the dead addon so xterm falls back
+        // to the DOM renderer, refit, and retry WebGL after the GPU settles.
+        addon?.dispose();
+        webglFailures++;
+        scheduleFit();
+        scheduleWebglRetry();
+      });
+      term.loadAddon(addon);
+      webglFailures = 0;
+      // The first fit is owned by onMount's explicit fitNow(); only schedule one
+      // here when re-loading after a context loss (geometry already established).
+      if (lastCols !== 0 || lastRows !== 0) scheduleFit();
+    } catch (e) {
+      console.warn("WebGL addon unavailable, using DOM renderer:", e);
+      addon?.dispose();
+      webglFailures++;
+      scheduleWebglRetry();
+    }
+  }
+
+  function scheduleWebglRetry() {
+    if (webglRetryTimer) clearTimeout(webglRetryTimer);
+    webglRetryTimer = setTimeout(loadWebgl, 1000);
+  }
 
   function scheduleFit() {
     if (resizeTimer) clearTimeout(resizeTimer);
@@ -230,5 +301,37 @@
 
   :global(.xterm-viewport) {
     background-color: transparent !important;
+    /* The WebGL canvas (.xterm-screen) is a later sibling and paints over the
+       viewport's scrollbar, hiding it. Lift the viewport above the canvas so
+       the custom scrollbar is visible (selection and drag still work). */
+    z-index: 10;
+  }
+
+  :global(.xterm-viewport)::-webkit-scrollbar {
+    /* macOS WKWebView keeps the native overlay scrollbar (ignoring width and
+       the custom thumb/track) unless the native appearance is turned off. */
+    -webkit-appearance: none;
+    appearance: none;
+    width: 12px;
+  }
+
+  :global(.xterm-viewport)::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  :global(.xterm-viewport)::-webkit-scrollbar-thumb {
+    /* Derive the thumb from the foreground color so it keeps usable contrast
+       in both themes — var(--fg-faint) on the dark terminal background is the
+       same hue as "bright black" and reads as nearly invisible. */
+    background: color-mix(in srgb, var(--fg) 35%, transparent);
+    border: 3px solid var(--bg);
+    border-radius: 6px;
+    background-clip: padding-box;
+    min-height: 24px;
+  }
+
+  :global(.xterm-viewport)::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in srgb, var(--fg) 55%, transparent);
+    background-clip: padding-box;
   }
 </style>

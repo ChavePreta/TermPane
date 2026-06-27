@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { terminals, activeId } from "../store";
+  import { terminals, activeId, selectTerminal } from "../store";
   import { api } from "../api";
   import { dropTargetPaneId } from "../dragState";
   import { platform, shortcut } from "../platform";
@@ -7,14 +7,16 @@
   import ThemeSwitcher from "./ThemeSwitcher.svelte";
   import PinButton from "./PinButton.svelte";
   import LinkButtons from "./LinkButtons.svelte";
+  import CustomTerminalMenu from "./CustomTerminalMenu.svelte";
   import { sidebarCollapsed, sidebarWidth } from "../sidebarLayout";
 
   type Props = {
     onRequestClose: (id: string) => void;
     onOpenPreferences: () => void;
+    onManageShortcuts: () => void;
   };
 
-  let { onRequestClose, onOpenPreferences }: Props = $props();
+  let { onRequestClose, onOpenPreferences, onManageShortcuts }: Props = $props();
 
   let listEl: HTMLDivElement | null = $state(null);
 
@@ -72,15 +74,6 @@
       activeId.set(snap.id);
     } catch (e) {
       console.error("openTerminal falhou:", e);
-    }
-  }
-
-  async function handleSelect(id: string) {
-    activeId.set(id);
-    try {
-      await api.setActiveTerminal(id);
-    } catch (e) {
-      console.error("setActiveTerminal falhou:", e);
     }
   }
 
@@ -248,7 +241,7 @@
         terminal={t}
         active={t.id === $activeId}
         dragging={dragId === t.id && dragStarted}
-        onSelect={() => handleSelect(t.id)}
+        onSelect={() => selectTerminal(t.id)}
         onRequestClose={() => onRequestClose(t.id)}
       />
     {/each}
@@ -257,7 +250,10 @@
     {/if}
   </div>
   <div class="sidebar-footer">
-    <button class="new-terminal-btn" onclick={handleNew}>+ New terminal</button>
+    <div class="footer-actions">
+      <button class="new-terminal-btn" onclick={handleNew}>+ New terminal</button>
+      <CustomTerminalMenu onManage={onManageShortcuts} />
+    </div>
     <LinkButtons />
   </div>
   <div

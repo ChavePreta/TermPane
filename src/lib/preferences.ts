@@ -8,6 +8,7 @@ export interface Preferences {
   fontSize: number;
   lineHeight: number;
   cursorBlink: boolean;
+  bellNotifications: boolean;
 }
 
 const DEFAULT: Preferences = {
@@ -17,6 +18,7 @@ const DEFAULT: Preferences = {
   fontSize: 13,
   lineHeight: 1.15,
   cursorBlink: true,
+  bellNotifications: true,
 };
 
 const internal = writable<Preferences>(DEFAULT);
