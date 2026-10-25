@@ -173,6 +173,9 @@ pub fn apply_hook(app: &AppHandle, pane_id: PaneId, payload: &Value) {
         std::thread::spawn(move || {
             follow_session_title(&app, pane_id, &session_id);
             collect_code_blocks(&app, pane_id, &session_id);
+            // The turn's last message can reach the transcript just after Stop.
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            collect_code_blocks(&app, pane_id, &session_id);
         });
     }
 }

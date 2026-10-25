@@ -137,6 +137,12 @@
     // input. Flag the owning card unless the user is already watching it.
     term.onBell(() => signalBell(terminalId));
 
+    // The TUI may redraw (resume, recap, clear) after a copy button was
+    // placed: check the buttons again once output settles.
+    term.onWriteParsed(() => {
+      if (codeBlocks.length > 0) schedulePlacement(codeBlocks, [700]);
+    });
+
     // Desktop-notification escape sequences (iTerm2 OSC 9, OSC 777) — the
     // convention many CLI tools (and Claude Code's iterm2 channel) use to ask
     // for a notification. Treat them like a bell, carrying the tool's message.
@@ -513,7 +519,7 @@
         // new width (the TUI may also have redrawn its text).
         if (cols !== lastCols && lastCols !== 0) {
           clearCodeButtons();
-          placeTimer = setTimeout(() => placeCodeButtons(codeBlocks), 500);
+          schedulePlacement(codeBlocks);
         }
         lastCols = cols;
         lastRows = rows;
@@ -691,14 +697,31 @@
   let codeBlocks = $derived(pane?.claude?.codeBlocks ?? []);
   let codeListOpen = $state(false);
   let copiedId = $state<string | null>(null);
-  const placed = new Map<string, { marker: IMarker; deco: IDecoration | undefined }>();
+  // `lift`: rows between the button's marker and the block's first row.
+  type Placed = {
+    marker: IMarker;
+    deco: IDecoration | undefined;
+    lift: number;
+    offset: number;
+    text: string;
+  };
+  const placed = new Map<string, Placed>();
   let placeTimer: ReturnType<typeof setTimeout> | null = null;
 
-  $effect(() => {
-    const blocks = codeBlocks;
+  // Let the TUI finish drawing before looking for the blocks; look again a
+  // little later, since a resumed session reports its blocks before it has
+  // redrawn its history, and a turn's last message may land after its Stop.
+  function schedulePlacement(blocks: CodeBlock[], delays = [500, 2000, 5000]) {
     if (placeTimer) clearTimeout(placeTimer);
-    // Let the TUI finish drawing the turn before looking for the blocks.
-    placeTimer = setTimeout(() => placeCodeButtons(blocks), 500);
+    const [first, ...rest] = delays;
+    placeTimer = setTimeout(() => {
+      placeCodeButtons(blocks);
+      if (rest.length > 0) schedulePlacement(blocks, rest);
+    }, first);
+  }
+
+  $effect(() => {
+    schedulePlacement(codeBlocks);
   });
 
   function clearCodeButtons() {
@@ -723,39 +746,66 @@
   function placeCodeButtons(blocks: CodeBlock[]) {
     if (!term) return;
     const buf = term.buffer.active;
+    // Claude Code marks the first line of a message with a bullet ("● ",
+    // "⏺ "); a block that opens the message starts right after it.
+    const rows: string[] = [];
+    for (let y = 0; y < buf.length; y++) {
+      const t = buf.getLine(y)?.translateToString(true).trim() ?? "";
+      rows.push(t.replace(/^[●⏺•]\s+/, ""));
+    }
+    // The TUI repaints lines in place, so a marker can outlive the text it
+    // was put on: keep a button only while its block still starts there.
     const used = new Set<number>();
     for (const [id, p] of placed) {
-      if (p.marker.isDisposed || !blocks.some((b) => b.id === id)) {
+      const stale =
+        p.marker.isDisposed ||
+        !blocks.some((b) => b.id === id) ||
+        !rows[p.marker.line + p.lift + p.offset]?.startsWith(p.text);
+      if (stale) {
         p.deco?.dispose();
         p.marker.dispose();
         placed.delete(id);
       } else {
-        used.add(p.marker.line);
+        used.add(p.marker.line + p.lift);
       }
     }
-    const rows: string[] = [];
-    for (let y = 0; y < buf.length; y++) rows.push(buf.getLine(y)?.translateToString(true).trim() ?? "");
     // Newest blocks first, each matched to the latest screen occurrence not
     // already taken, so a block shown twice (a redraw) gets the copy on screen.
+    // A block Claude prints again (same code, same id) moves its button down.
     for (const block of [...blocks].reverse().slice(0, 30)) {
-      if (placed.has(block.id)) continue;
       const anchor = anchorOf(block.code);
       if (!anchor) continue;
+      const current = placed.get(block.id);
+      const currentTop = current ? current.marker.line + current.lift : -1;
       let found = -1;
       for (let y = rows.length - 1; y >= 0; y--) {
-        if (!used.has(y - anchor.offset) && rows[y].startsWith(anchor.text)) {
+        const top = y - anchor.offset;
+        if ((top === currentTop || !used.has(top)) && rows[y].startsWith(anchor.text)) {
           found = y;
           break;
         }
       }
       if (found < 0) continue;
       const top = Math.max(0, found - anchor.offset);
+      if (top === currentTop) continue;
+      if (current) {
+        current.deco?.dispose();
+        current.marker.dispose();
+        placed.delete(block.id);
+        used.delete(currentTop);
+      }
       used.add(top);
-      const marker = term.registerMarker(top - (buf.baseY + buf.cursorY));
+      // On the blank row above the block when there is one, so the button
+      // never covers code.
+      const lift = top > 0 && rows[top - 1] === "" ? 1 : 0;
+      const marker = term.registerMarker(top - lift - (buf.baseY + buf.cursorY));
       if (!marker) continue;
+      // Clear of the prompt-navigation column (24px buttons, 22px from the edge).
+      const cellWidth = (term.element?.clientWidth ?? 0) / term.cols || 8;
+      const navCols = Math.ceil(50 / cellWidth);
       const deco = term.registerDecoration({
         marker,
-        x: Math.max(0, term.cols - 3),
+        x: Math.max(0, term.cols - 3 - navCols),
         width: 3,
         layer: "top",
       });
@@ -776,7 +826,7 @@
         });
         el.appendChild(btn);
       });
-      placed.set(block.id, { marker, deco });
+      placed.set(block.id, { marker, deco, lift, ...anchor });
     }
   }
 

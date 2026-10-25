@@ -1,3 +1,13 @@
+# Release Notes — v0.4.1 (2026-10-24)
+
+A fix release for the copy button on Claude's code blocks.
+
+## 🐛 Fixed: Copy button on code blocks
+
+The copy button next to Claude's code blocks now shows up reliably: on a block that opens Claude's reply, on the last reply of a turn, after resuming a session, and when Claude prints the same code again. It no longer lands on the wrong line when Claude redraws the screen, and it sits just above the block, clear of the scroll buttons, instead of covering the code.
+
+---
+
 # Release Notes — v0.4.0 (2026-10-24)
 
 TermPane becomes a home for Claude Code: every tab shows what Claude is doing, tabs nest, you can see and stage the files each session changed, resume any past session, have Claude drive other tabs, and get all your tabs back after a crash. Plus fixes for black screens with many tabs and after hibernation.

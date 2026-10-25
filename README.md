@@ -9,7 +9,7 @@ that turns a wall of windows into a single, glanceable workspace. Every shell
 you open lives as a card in the sidebar — named, renameable, and reorderable —
 with the currently running command shown right next to its label.
 
-<img src="https://termpane.com/assets/screenshot-v0.3.1.png" alt="TermPane Screenshot" width="600" style="border: 1px solid black;" />
+<img src="docs/screenshot-v0.4.0.png" alt="TermPane Screenshot" width="600" style="border: 1px solid black;" />
 
 ---
 

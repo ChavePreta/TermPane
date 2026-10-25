@@ -1,6 +1,6 @@
 [package]
 name = "termpane"
-version = "0.4.0"
+version = "0.4.1"
 description = "TermPane — native, lightweight terminal manager (Tauri + portable-pty)"
 authors = ["jonas@silveira.eti.br"]
 edition = "2021"

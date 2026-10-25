@@ -5,6 +5,32 @@ All notable changes to TermPane are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-10-24
+
+### Fixed
+
+- **Code-block copy button missing or misplaced.** Four cases, all in
+  `placeCodeButtons` (`TerminalView.svelte`) unless noted:
+  - A block that opens Claude's message shares its first row with the
+    message bullet (`⏺` / `●`); the bullet is now stripped before matching.
+  - The turn's last message can reach the transcript just after the `Stop`
+    hook, so its blocks were never collected; `apply_hook` (`claude.rs`) scans
+    the transcript again 1.5 s later. Placement also retries (500 ms / 2 s /
+    5 s, `schedulePlacement`), since a resumed session reports its blocks
+    before redrawing its history.
+  - Claude Code repaints lines in place, leaving a button on the wrong row.
+    Each pass now checks that the block still starts under its button and
+    re-places it otherwise; passes run again once output settles
+    (`onWriteParsed`, debounced).
+  - A block printed again (same code, same id) kept its button on the old
+    copy; it now moves to the newest one.
+- The button now sits on the blank row above the block (when there is one)
+  and clear of the prompt-navigation column, so it no longer covers code.
+
+### Changed
+
+- README screenshot updated for 0.4 (`docs/screenshot-v0.4.0.png`).
+
 ## [0.4.0] - 2026-10-24
 
 ### Fixed
@@ -613,6 +639,7 @@ Initial release.
 - macOS-first build (`.dmg` + `.app`); Linux `.deb` + `.AppImage` via local
   build only.
 
+[0.4.1]: https://github.com/ChavePreta/TermPane/releases/tag/v0.4.1
 [0.4.0]: https://github.com/ChavePreta/TermPane/releases/tag/v0.4.0
 [0.3.1]: https://github.com/ChavePreta/TermPane/releases/tag/v0.3.1
 [0.3.0]: https://github.com/ChavePreta/TermPane/releases/tag/v0.3.0
