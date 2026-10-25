@@ -39,14 +39,47 @@ with the currently running command shown right next to its label.
 - **Bell-aware sidebar.** Any program that rings the terminal bell (`\x07`) — a finished `make`, a test run, an alert in a TUI — pulses its sidebar card. If it's a card you weren't looking at, the card keeps a dot + accent highlight until you open it. **Zero config.**
 - **OS notifications when you're away.** If TermPane isn't the focused window, the same event raises a native macOS notification (throttled to one per terminal until you visit it). On by default; turn it off in **Preferences → "Notify when a background terminal needs attention."**
 - **`OSC 9` / `OSC 777` support.** Tools that request notifications via these standard escape sequences (iTerm2/Ghostty/VS Code style) light up the card too, and their message text rides along to the OS notification.
-- **Claude Code.** Claude notifies through the OS rather than the terminal bell, so it needs a one-time hook to light up the card. Setup (a small versioned script + two hook lines): [`integrations/claude-code/`](integrations/claude-code/README.md).
+- **Claude Code.** Install the plugin in **Preferences → Claude Code integration** and Claude's permission requests, questions and finished turns light up the card. (The older bell-script setup in [`integrations/claude-code/`](integrations/claude-code/README.md) still works, but isn't needed anymore.)
+
+### Built for Claude Code
+- **Live status on every card** — a spinner while Claude works, the tool it's running, and a clear marker when it needs your permission or is done (with a notification when TermPane is in the background).
+- **Sub-tabs** — nest a dev server or shell under the Claude tab that uses it (`⌘⇧T`). Collapsible, drag to nest/un-nest.
+- **Files changed per session** — a badge shows what each tab's Claude session wrote; stage them with one click (`⌘⇧S`). Works with several sessions in one folder: files touched by two sessions are flagged, never auto-staged.
+- **Follows worktrees** — new tabs and splits open where Claude is actually working.
+- **Resume any past session** (`⌘⇧O`) — searchable list of Claude Code sessions, current project first; reopens with `claude --resume`.
+- **Claude drives your tabs** — Claude can list tabs, read another tab's output, type commands, and open, focus or close tabs, across every TermPane window.
+- **`/fork` into a sub-tab** — the copy opens nested under the current tab as **FORK - <tab>**, already resumed.
+- **One plugin, one click** — Preferences → *Claude Code integration* → **Install Claude Code plugin** sets all of this up; outside TermPane the plugin does nothing.
+- **Tabs come back after a crash or restart**, with running Claude sessions resumed.
+- **Mark as unread** (`⌘⇧U`) and **jump to the next tab that needs you** (`⌘J`); a **Dock badge** counts the tabs waiting for you.
+- **Tabs named after their session**, with **branch / worktree** and **open ports** (click to open in the browser) under the name. Renaming a tab names its Claude session too.
+- **Watch background work** — a spy button opens a live, read-only view of commands and agents Claude runs in the background; published **artifacts** are listed with links.
+- **Copy buttons on Claude's code blocks** — copies the code exactly as written, not as the screen wrapped it; a `{ }` list keeps every block of the session.
+- **Diffs per session**, **⌘F** search in the scrollback, **⌘-click file paths** to open them in your editor, and a **list of your prompts** (`⌘⇧L`).
+- **⋯ menu on every pane** — all actions for that pane and its tab, each with its shortcut, including **Fork Claude session into a sub-tab**.
+- **Jump between your own prompts** in a long Claude session — ▲/▼ on the pane's right edge, or `⌘↑` / `⌘↓` — plus go-to-start / go-to-end buttons (`⌘Home` / `⌘End`).
+
+### Works with Dev Containers
+If a project has a [`devcontainer.json`](https://containers.dev) (`.devcontainer/devcontainer.json`, `.devcontainer.json` or `.devcontainer/<name>/devcontainer.json`), TermPane reads it:
+
+- **Port names and protocols** from `portsAttributes` — the card shows "App" instead of `127.0.0.1:80`; ports marked `"onAutoForward": "ignore"` are hidden.
+- **Open shell in dev container** in the pane's ⋯ menu — a sub-tab inside the container at `workspaceFolder`, for Docker Compose based configurations (`dockerComposeFile` + `service`). An already-running container is reused, never recreated.
+- **Exact URLs** through the spec's tool-specific block, when a port isn't served at `http://127.0.0.1:<port>/`:
+
+  ```jsonc
+  "customizations": {
+    "termpane": { "portUrls": { "80": "http://app.test/admin" } }
+  }
+  ```
+
+Other tools ignore the `termpane` block, so it's safe to commit.
 
 ### Customize your workspace
 - **Rename any card** with a double-click (or F2).
 - **Drag-and-drop reorder** — grab a card, drop where you want, blue indicator shows the target slot.
-- **Custom terminal shortcuts** — a **+ custom** button beside **+ New terminal** opens a dropdown of named shortcuts you define, each with an optional starting directory, startup command, and shell. Click one to launch a preconfigured terminal — e.g. open Claude in a project folder, or SSH into a host. Manage them in a built-in editor; they persist across launches.
+- **Custom terminal shortcuts** — a **+ custom** button beside **+ New terminal** opens a dropdown of named shortcuts you define, each with an optional starting directory, startup command, and shell. Click one to launch a preconfigured terminal — e.g. open Claude in a project folder, or SSH into a host. The card is named after the shortcut. Manage and reorder them (↑/↓) in a built-in editor; they persist across launches.
 - **Always-on-top pin** in the sidebar header — keep TermPane floating over your editor while you debug. Persists across launches.
-- **Preferences dialog** for font family, font size (8–32 px), line height, cursor blink, and bell notifications. Live-updates every open terminal.
+- **Preferences dialog** for font family, font size (8–32 px), line height, cursor blink, bell notifications, reopening tabs after a crash, and the Claude Code integration. Live-updates every open terminal.
 
 ### Splits, the way you want them
 - **Horizontal split** (`⌘D`) — panes side by side.
@@ -104,6 +137,19 @@ with the currently running command shown right next to its label.
 | ----------------------------------------- | ------------------- | ---------------------- |
 | New window (separate instance)            | `⌘N`                | `Ctrl+Shift+N`         |
 | New terminal                              | `⌘T`                | `Ctrl+Shift+T`         |
+| New sub-tab of the active tab             | `⌘⇧T`               | `Ctrl+Shift+Alt+T`     |
+| Jump to next tab needing you              | `⌘J`                | `Ctrl+Shift+J`         |
+| Mark active tab unread / read             | `⌘⇧U`               | `Ctrl+Shift+Alt+U`     |
+| Stage files Claude changed in active tab  | `⌘⇧S`               | `Ctrl+Shift+Alt+S`     |
+| Resume a Claude session                   | `⌘⇧O`               | `Ctrl+Shift+Alt+O`     |
+| Redraw terminals (keeps scrollback)       | `⌘⇧R`               | `Ctrl+Shift+Alt+R`     |
+| Previous / next prompt typed to Claude    | `⌘↑` / `⌘↓`         | `Ctrl+Shift+↑` / `Ctrl+Shift+↓` |
+| Start / end of scrollback                 | `⌘Home` / `⌘End`    | `Ctrl+Shift+Home` / `Ctrl+Shift+End` |
+| Show all keyboard shortcuts               | `⌘?`                | `Ctrl+Shift+Alt+/`     |
+| Find in scrollback / next / previous      | `⌘F` / `⌘G` / `⌘⇧G` | `Ctrl+Shift+F` / `Ctrl+Shift+G` / `Ctrl+Shift+Alt+G` |
+| List your prompts to Claude               | `⌘⇧L`               | `Ctrl+Shift+Alt+L`     |
+| Open a file path in your editor           | `⌘`-click           | `Ctrl`-click           |
+| Copy exactly as displayed (⌘C joins wrapped lines) | `⌘⇧C`      | `Ctrl+Shift+Alt+C`     |
 | Close pane / terminal (with confirmation) | `⌘W`                | `Ctrl+Shift+W`         |
 | Split horizontal / vertical               | `⌘D` / `⌘⇧D`        | `Ctrl+Shift+D` / `Ctrl+Shift+Alt+D` |
 | Flip orientation of parent split          | `⌘/`                | `Ctrl+Shift+/`         |

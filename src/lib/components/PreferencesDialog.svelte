@@ -1,5 +1,6 @@
 <script lang="ts">
   import { preferences, savePreferences, type Preferences } from "../preferences";
+  import { api, type IntegrationStatus } from "../api";
 
   type Props = {
     open: boolean;
@@ -13,6 +14,12 @@
   let lineHeight = $state(1.15);
   let cursorBlink = $state(true);
   let bellNotifications = $state(true);
+  let restoreSessions = $state(true);
+  let editorCommand = $state("");
+  let integration = $state<IntegrationStatus | null>(null);
+  let integrationBusy = $state(false);
+  let integrationMsg = $state<string | null>(null);
+  let integrationError = $state<string | null>(null);
   let saving = $state(false);
   let error = $state<string | null>(null);
 
@@ -24,9 +31,38 @@
       lineHeight = p.lineHeight;
       cursorBlink = p.cursorBlink;
       bellNotifications = p.bellNotifications;
+      restoreSessions = p.restoreSessions;
+      editorCommand = p.editorCommand;
       error = null;
+      integrationMsg = null;
+      integrationError = null;
+      void refreshIntegration();
     }
   });
+
+  async function refreshIntegration() {
+    try {
+      integration = await api.claudeIntegrationStatus();
+    } catch (e) {
+      integrationError = String(e);
+    }
+  }
+
+  async function installPlugin() {
+    integrationBusy = true;
+    integrationMsg = null;
+    integrationError = null;
+    try {
+      await api.installClaudePlugin();
+      integrationMsg =
+        "Plugin installed. Restart running Claude sessions (or run /reload-plugins in them) to pick it up.";
+    } catch (e) {
+      integrationError = `Could not install through claude: ${e}. Run this in a terminal instead: ${integration?.manualCommands ?? ""}`;
+    } finally {
+      integrationBusy = false;
+      await refreshIntegration();
+    }
+  }
 
   async function handleSave() {
     saving = true;
@@ -38,6 +74,8 @@
       lineHeight: clamp(lineHeight, 1.0, 2.0),
       cursorBlink,
       bellNotifications,
+      restoreSessions,
+      editorCommand: editorCommand.trim(),
     };
     try {
       await savePreferences(next);
@@ -61,6 +99,8 @@
     lineHeight = 1.15;
     cursorBlink = true;
     bellNotifications = true;
+    restoreSessions = true;
+    editorCommand = "";
   }
 
   function handleKey(e: KeyboardEvent) {
@@ -147,6 +187,71 @@
         when Claude finishes and waits for you.
       </small>
 
+      <div class="field checkbox">
+        <label>
+          <input type="checkbox" bind:checked={restoreSessions} />
+          Reopen tabs after TermPane quits or crashes
+        </label>
+      </div>
+      <small>
+        Brings back tabs, sub-tabs, splits and folders on the next launch, and
+        resumes Claude Code sessions that were running (needs the integration
+        below).
+      </small>
+
+      <div class="field">
+        <label for="editor">Open file paths with</label>
+        <input
+          id="editor"
+          type="text"
+          bind:value={editorCommand}
+          placeholder="code -g {"{file}"}:{"{line}"}:{"{col}"}"
+        />
+        <small>
+          ⌘-click a path like src/app.ts:42 in a terminal to open it. Empty
+          uses VS Code (code -g), else the file's default app. Placeholders:
+          {"{file}"}, {"{line}"}, {"{col}"}.
+        </small>
+      </div>
+
+      <section class="integration">
+        <h3>Claude Code integration</h3>
+        <p class="integration-text">
+          One Claude Code plugin: tabs show what Claude is doing and the files
+          it changes, sessions can be resumed and restored, Claude can read,
+          type into and open TermPane tabs, and /fork opens the copy in a
+          sub-tab. Outside TermPane the plugin does nothing.
+        </p>
+        <div class="integration-row">
+          <span class="state" class:on={integration?.pluginInstalled}>
+            {integration === null
+              ? "Checking…"
+              : integration.pluginInstalled
+                ? "Plugin installed"
+                : "Plugin not installed"}
+          </span>
+          <button class="btn-secondary" onclick={installPlugin} disabled={integrationBusy}>
+            {integrationBusy
+              ? "Installing…"
+              : integration?.pluginInstalled
+                ? "Reinstall plugin"
+                : "Install Claude Code plugin"}
+          </button>
+        </div>
+        {#if integration?.legacySetup}
+          <small>
+            The earlier hooks / MCP server setup is still configured; installing
+            the plugin removes it so nothing reports twice.
+          </small>
+        {/if}
+        {#if integrationMsg}
+          <p class="integration-ok">{integrationMsg}</p>
+        {/if}
+        {#if integrationError}
+          <p class="error">{integrationError}</p>
+        {/if}
+      </section>
+
       {#if error}
         <p class="error">{error}</p>
       {/if}
@@ -187,7 +292,49 @@
     padding: 22px 24px 18px 24px;
     min-width: 420px;
     max-width: 520px;
+    max-height: calc(100vh - 60px);
+    overflow-y: auto;
     color: var(--fg);
+  }
+
+  .integration {
+    margin: 18px 0 14px 0;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
+
+  h3 {
+    margin: 0 0 6px 0;
+    font-size: 13px;
+  }
+
+  .integration-text {
+    margin: 0 0 10px 0;
+    font-size: 11px;
+    color: var(--fg-faint);
+  }
+
+  .integration-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+
+  .state {
+    font-size: 12px;
+    color: var(--fg-muted);
+  }
+
+  .state.on {
+    color: #2ea043;
+  }
+
+  .integration-ok {
+    margin: 4px 0 0 0;
+    font-size: 11px;
+    color: var(--fg-muted);
   }
 
   h2 {

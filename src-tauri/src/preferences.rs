@@ -19,6 +19,12 @@ pub struct Preferences {
     pub cursor_blink: bool,
     #[serde(default = "default_bell_notifications")]
     pub bell_notifications: bool,
+    #[serde(default = "default_restore_sessions")]
+    pub restore_sessions: bool,
+    /// How clickable file paths open: a command with `{file}`, `{line}` and
+    /// `{col}` placeholders; empty means `code -g`, then the default app.
+    #[serde(default)]
+    pub editor_command: String,
 }
 
 fn default_schema() -> u32 {
@@ -39,6 +45,9 @@ fn default_cursor_blink() -> bool {
 fn default_bell_notifications() -> bool {
     true
 }
+fn default_restore_sessions() -> bool {
+    true
+}
 
 impl Default for Preferences {
     fn default() -> Self {
@@ -49,6 +58,8 @@ impl Default for Preferences {
             line_height: default_line_height(),
             cursor_blink: default_cursor_blink(),
             bell_notifications: default_bell_notifications(),
+            restore_sessions: default_restore_sessions(),
+            editor_command: String::new(),
         }
     }
 }

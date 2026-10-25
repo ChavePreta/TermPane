@@ -1,5 +1,5 @@
 use crate::model::{
-    LayoutSnapshot, PaneId, PaneSnapshot, SplitDir, TerminalId, TerminalSnapshot,
+    ClaudeInfo, GitInfo, LayoutSnapshot, PortInfo, PaneId, PaneSnapshot, SplitDir, TerminalId, TerminalSnapshot,
 };
 use crate::pty::SharedPty;
 use chrono::{DateTime, Utc};
@@ -218,6 +218,26 @@ pub struct PaneData {
     pub pty: SharedPty,
     pub foreground_command: Option<String>,
     pub exit_code: Option<i32>,
+    pub claude: Option<ClaudeInfo>,
+    pub git: Option<GitInfo>,
+    pub ports: Vec<PortInfo>,
+    pub dev_container: Option<String>,
+    pub cwd: Option<String>,
+}
+
+impl PaneData {
+    pub fn new(pty: SharedPty) -> Self {
+        Self {
+            pty,
+            foreground_command: None,
+            exit_code: None,
+            claude: None,
+            git: None,
+            ports: Vec::new(),
+            dev_container: None,
+            cwd: None,
+        }
+    }
 }
 
 pub struct Terminal {
@@ -227,6 +247,15 @@ pub struct Terminal {
     pub panes: HashMap<PaneId, PaneData>,
     pub layout: LayoutNode,
     pub active_pane: PaneId,
+    /// Sub-tab nesting. `Inner::terminals` is kept in depth-first order (a
+    /// parent is followed by its whole subtree), so the flat list is already
+    /// the sidebar's display order.
+    pub parent_id: Option<TerminalId>,
+    pub marked_unread: bool,
+    /// The label was chosen by TermPane (Term#N, a resumed session's title),
+    /// not the user, so it may follow the Claude session's title. A rename by
+    /// the user turns this off.
+    pub auto_label: bool,
 }
 
 impl Terminal {
@@ -243,9 +272,16 @@ impl Terminal {
                     id: id.to_string(),
                     foreground_command: data.foreground_command.clone(),
                     exit_code: data.exit_code,
+                    claude: data.claude.clone(),
+                    git: data.git.clone(),
+                    ports: data.ports.clone(),
+                    dev_container: data.dev_container.clone(),
+                    cwd: data.cwd.clone(),
                 })
                 .collect(),
             active_pane: self.active_pane.to_string(),
+            parent_id: self.parent_id.map(|p| p.to_string()),
+            marked_unread: self.marked_unread,
         }
     }
 }
@@ -305,23 +341,74 @@ impl AppState {
         }
     }
 
-    pub fn insert(&self, terminal: Terminal) {
+    /// Adds a terminal: at the end for a top-level one, or right after its
+    /// parent's subtree for a sub-tab (keeping the depth-first order).
+    pub fn insert(&self, mut terminal: Terminal) {
         let mut g = self.inner.write();
         let id = terminal.id;
-        g.terminals.push(terminal);
+        let pos = match terminal.parent_id {
+            Some(parent) => match g.terminals.iter().position(|t| t.id == parent) {
+                Some(p) => subtree_end(&g.terminals, p),
+                None => {
+                    terminal.parent_id = None;
+                    g.terminals.len()
+                }
+            },
+            None => g.terminals.len(),
+        };
+        g.terminals.insert(pos, terminal);
         if g.active.is_none() {
             g.active = Some(id);
         }
     }
 
-    /// Renames a terminal. Returns `true` if found.
-    pub fn rename_terminal(&self, id: TerminalId, label: String) -> bool {
+    /// Renames a terminal. `by_user` pins the label (it stops following the
+    /// Claude session's title). Returns `true` if found.
+    pub fn rename_terminal(&self, id: TerminalId, label: String, by_user: bool) -> bool {
         let mut g = self.inner.write();
         if let Some(t) = g.terminals.iter_mut().find(|t| t.id == id) {
             t.label = label;
+            if by_user {
+                t.auto_label = false;
+            }
             return true;
         }
         false
+    }
+
+    /// Whether the terminal's label may still be replaced automatically.
+    pub fn is_auto_label(&self, id: TerminalId) -> bool {
+        self.inner.read().terminals.iter().any(|t| t.id == id && t.auto_label)
+    }
+
+    /// Applies the monitor's slow-tick context (git, ports) to a pane.
+    /// Returns the owning terminal when anything changed.
+    pub fn set_pane_context(
+        &self,
+        pane_id: PaneId,
+        git: Option<GitInfo>,
+        ports: Vec<PortInfo>,
+        dev_container: Option<String>,
+        cwd: Option<String>,
+    ) -> Option<TerminalId> {
+        let mut g = self.inner.write();
+        for t in g.terminals.iter_mut() {
+            if let Some(p) = t.panes.get_mut(&pane_id) {
+                if p.git == git
+                    && p.ports == ports
+                    && p.dev_container == dev_container
+                    && p.cwd == cwd
+                {
+                    return None;
+                }
+                p.git = git;
+                p.ports = ports;
+                p.dev_container = dev_container;
+                p.cwd = cwd;
+                return Some(t.id);
+            }
+        }
+        None
     }
 
     /// Reorders terminals to match the provided order. Returns `true`
@@ -343,18 +430,161 @@ impl AppState {
             }
         }
         g.terminals = new_order;
+        normalize_tree_order(&mut g.terminals);
         true
     }
 
-    /// Removes a whole terminal (killing all its panes). Returns the removed terminal.
+    /// Read access to the whole list (depth-first order) and the active id.
+    pub fn with_terminals<R>(&self, f: impl FnOnce(&[Terminal], Option<TerminalId>) -> R) -> R {
+        let g = self.inner.read();
+        f(&g.terminals, g.active)
+    }
+
+    /// Direct sub-tabs of a terminal.
+    pub fn children_of(&self, id: TerminalId) -> Vec<TerminalId> {
+        let g = self.inner.read();
+        g.terminals.iter().filter(|t| t.parent_id == Some(id)).map(|t| t.id).collect()
+    }
+
+    /// Removes a whole terminal (the caller kills its panes). Its sub-tabs are
+    /// promoted to its own parent rather than closed with it.
     pub fn remove_terminal(&self, id: TerminalId) -> Option<Terminal> {
         let mut g = self.inner.write();
         let pos = g.terminals.iter().position(|t| t.id == id)?;
         let term = g.terminals.remove(pos);
+        for t in g.terminals.iter_mut() {
+            if t.parent_id == Some(id) {
+                t.parent_id = term.parent_id;
+            }
+        }
         if g.active == Some(id) {
             g.active = g.terminals.first().map(|t| t.id);
         }
         Some(term)
+    }
+
+    /// Moves a terminal under `parent` (None = top level) and applies the given
+    /// display order, then restores the depth-first invariant. Refuses to make a
+    /// terminal a descendant of itself.
+    pub fn move_terminal(
+        &self,
+        id: TerminalId,
+        parent: Option<TerminalId>,
+        order: &[TerminalId],
+    ) -> bool {
+        let mut g = self.inner.write();
+        if let Some(p) = parent {
+            if p == id || is_descendant(&g.terminals, p, id) {
+                return false;
+            }
+            if !g.terminals.iter().any(|t| t.id == p) {
+                return false;
+            }
+        }
+        let Some(t) = g.terminals.iter_mut().find(|t| t.id == id) else {
+            return false;
+        };
+        t.parent_id = parent;
+        if order.len() == g.terminals.len() {
+            let mut reordered = Vec::with_capacity(order.len());
+            for oid in order {
+                if let Some(pos) = g.terminals.iter().position(|t| t.id == *oid) {
+                    reordered.push(g.terminals.remove(pos));
+                }
+            }
+            reordered.append(&mut g.terminals);
+            g.terminals = reordered;
+        }
+        normalize_tree_order(&mut g.terminals);
+        true
+    }
+
+    pub fn terminal_order(&self) -> Vec<String> {
+        self.inner.read().terminals.iter().map(|t| t.id.to_string()).collect()
+    }
+
+    pub fn set_unread(&self, id: TerminalId, unread: bool) -> bool {
+        let mut g = self.inner.write();
+        match g.terminals.iter_mut().find(|t| t.id == id) {
+            Some(t) => {
+                t.marked_unread = unread;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Applies `f` to a pane's Claude record. Returns the owning terminal and the
+    /// new record when it actually changed.
+    pub fn update_claude(
+        &self,
+        pane_id: PaneId,
+        f: impl FnOnce(&mut Option<ClaudeInfo>),
+    ) -> Option<(TerminalId, Option<ClaudeInfo>)> {
+        let mut g = self.inner.write();
+        for t in g.terminals.iter_mut() {
+            if let Some(p) = t.panes.get_mut(&pane_id) {
+                let before = p.claude.clone();
+                f(&mut p.claude);
+                if p.claude == before {
+                    return None;
+                }
+                return Some((t.id, p.claude.clone()));
+            }
+        }
+        None
+    }
+
+    pub fn claude_of(&self, pane_id: PaneId) -> Option<ClaudeInfo> {
+        let g = self.inner.read();
+        g.terminals
+            .iter()
+            .find_map(|t| t.panes.get(&pane_id))
+            .and_then(|p| p.claude.clone())
+    }
+
+    /// Every pane's Claude record, for cross-session checks (shared files).
+    pub fn all_claude(&self) -> Vec<(PaneId, ClaudeInfo)> {
+        let g = self.inner.read();
+        let mut out = Vec::new();
+        for t in &g.terminals {
+            for (pid, p) in &t.panes {
+                if let Some(c) = &p.claude {
+                    out.push((*pid, c.clone()));
+                }
+            }
+        }
+        out
+    }
+
+    pub fn active_pane(&self) -> Option<PaneId> {
+        let g = self.inner.read();
+        let active = g.active?;
+        g.terminals.iter().find(|t| t.id == active).map(|t| t.active_pane)
+    }
+
+    pub fn terminal_of_pane(&self, pane_id: PaneId) -> Option<TerminalId> {
+        let g = self.inner.read();
+        g.terminals.iter().find(|t| t.panes.contains_key(&pane_id)).map(|t| t.id)
+    }
+
+    pub fn active_pane_of(&self, id: TerminalId) -> Option<PaneId> {
+        let g = self.inner.read();
+        g.terminals.iter().find(|t| t.id == id).map(|t| t.active_pane)
+    }
+
+    /// Resolves a tab reference — a terminal id or (case-insensitively) a label.
+    pub fn find_terminal(&self, reference: &str) -> Option<TerminalId> {
+        let g = self.inner.read();
+        if let Ok(id) = reference.parse::<TerminalId>() {
+            if g.terminals.iter().any(|t| t.id == id) {
+                return Some(id);
+            }
+        }
+        g.terminals
+            .iter()
+            .find(|t| t.label.eq_ignore_ascii_case(reference.trim()))
+            .map(|t| t.id)
     }
 
     pub fn snapshots(&self) -> Vec<TerminalSnapshot> {
@@ -392,14 +622,7 @@ impl AppState {
         for t in g.terminals.iter_mut() {
             if t.panes.contains_key(&pane_id) {
                 if t.layout.split_at(pane_id, new_pane_id, dir) {
-                    t.panes.insert(
-                        new_pane_id,
-                        PaneData {
-                            pty: new_pty,
-                            foreground_command: None,
-                            exit_code: None,
-                        },
-                    );
+                    t.panes.insert(new_pane_id, PaneData::new(new_pty));
                     t.active_pane = new_pane_id;
                     return Some(t.id);
                 }
@@ -483,15 +706,6 @@ impl AppState {
             }
         }
         out
-    }
-
-    /// Shell PID of the active pane of the currently-active terminal, if any.
-    pub fn active_pane_shell_pid(&self) -> Option<u32> {
-        let g = self.inner.read();
-        let active = g.active?;
-        let t = g.terminals.iter().find(|t| t.id == active)?;
-        let p = t.panes.get(&t.active_pane)?;
-        p.pty.shell_pid
     }
 
     /// Shell PID of an arbitrary pane.
@@ -627,6 +841,13 @@ impl AppState {
             g.terminals[target_pos].panes.insert(pid, data);
         }
 
+        for t in g.terminals.iter_mut() {
+            if t.parent_id == Some(source_terminal_id) {
+                t.parent_id = source.parent_id;
+            }
+        }
+        normalize_tree_order(&mut g.terminals);
+
         if g.active == Some(source_terminal_id) {
             g.active = Some(target_terminal_id);
         }
@@ -694,11 +915,77 @@ impl AppState {
             panes: new_panes,
             layout: LayoutNode::Leaf(pane_id),
             active_pane: pane_id,
+            parent_id: g.terminals[source_pos].parent_id,
+            marked_unread: false,
+            auto_label: true,
         };
 
-        let insert_at = source_pos + 1;
+        // A sibling of the source: right after the source's whole subtree.
+        let insert_at = subtree_end(&g.terminals, source_pos);
         g.terminals.insert(insert_at, new_terminal);
 
         Some(ExtractResult { source_terminal_id })
     }
+}
+
+/// Index just past the subtree rooted at `pos` (the terminal plus every
+/// descendant), relying on the depth-first order of the list.
+fn subtree_end(terminals: &[Terminal], pos: usize) -> usize {
+    let root = terminals[pos].id;
+    let mut end = pos + 1;
+    while end < terminals.len() && is_descendant(terminals, terminals[end].id, root) {
+        end += 1;
+    }
+    end
+}
+
+/// Whether `id` sits somewhere below `ancestor`.
+fn is_descendant(terminals: &[Terminal], id: TerminalId, ancestor: TerminalId) -> bool {
+    let mut cur = terminals.iter().find(|t| t.id == id).and_then(|t| t.parent_id);
+    let mut hops = 0;
+    while let Some(p) = cur {
+        if p == ancestor {
+            return true;
+        }
+        hops += 1;
+        if hops > terminals.len() {
+            return false;
+        }
+        cur = terminals.iter().find(|t| t.id == p).and_then(|t| t.parent_id);
+    }
+    false
+}
+
+/// Rewrites the list into depth-first order: top-level terminals in their
+/// current relative order, each followed by its children (recursively, also in
+/// relative order). Dangling parent ids are cleared.
+fn normalize_tree_order(terminals: &mut Vec<Terminal>) {
+    let ids: std::collections::HashSet<TerminalId> = terminals.iter().map(|t| t.id).collect();
+    for t in terminals.iter_mut() {
+        if t.parent_id.is_some_and(|p| !ids.contains(&p) || p == t.id) {
+            t.parent_id = None;
+        }
+    }
+    let mut pool: Vec<Option<Terminal>> = std::mem::take(terminals).into_iter().map(Some).collect();
+    fn visit(pool: &mut [Option<Terminal>], parent: Option<TerminalId>, out: &mut Vec<Terminal>) {
+        for i in 0..pool.len() {
+            let matches = pool[i].as_ref().is_some_and(|t| t.parent_id == parent);
+            if matches {
+                let t = pool[i].take().unwrap();
+                let id = t.id;
+                out.push(t);
+                visit(pool, Some(id), out);
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(pool.len());
+    visit(&mut pool, None, &mut out);
+    // Anything left over sits in a parent cycle; surface it at the top level.
+    for slot in pool.iter_mut() {
+        if let Some(mut t) = slot.take() {
+            t.parent_id = None;
+            out.push(t);
+        }
+    }
+    *terminals = out;
 }

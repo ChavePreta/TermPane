@@ -1,15 +1,22 @@
+mod claude;
+pub mod cli;
 mod commands;
+mod context;
+mod control;
+mod devcontainer;
 mod menu;
 mod model;
 mod monitor;
 mod persist;
 mod preferences;
 mod pty;
+mod restore;
 mod shortcuts;
 mod state;
+mod wake;
 
 use state::AppState;
-use tauri::{Emitter, Manager, WindowEvent};
+use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 
 // WKWebView caches the bundled frontend per origin and keeps serving the stale
 // bundle after an app update, so freshly embedded assets never take effect.
@@ -62,16 +69,22 @@ pub fn run() {
     // time it loads the frontend.
     flush_webview_cache_on_upgrade();
 
+    let wake_watch = wake::WakeWatch::new();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .menu(|handle| menu::build(handle))
-        .on_menu_event(|_app, event| {
-            if event.id().as_ref() == menu::NEW_WINDOW_ID {
-                menu::spawn_new_instance();
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            menu::NEW_WINDOW_ID => menu::spawn_new_instance(),
+            menu::REDRAW_ID => commands::redraw_all(app),
+            menu::SHORTCUTS_ID => {
+                let _ = app.emit("help:shortcuts", ());
             }
+            _ => {}
         })
         .manage(AppState::new())
+        .manage(wake_watch.clone())
         .invoke_handler(tauri::generate_handler![
             commands::list_terminals,
             commands::open_terminal,
@@ -98,6 +111,25 @@ pub fn run() {
             commands::write_input_broadcast,
             commands::get_platform,
             commands::quit_app,
+            commands::ack_woke,
+            commands::move_terminal,
+            commands::set_terminal_unread,
+            commands::get_pane_backlog,
+            commands::get_terminal_files,
+            commands::stage_terminal_files,
+            commands::clear_terminal_files,
+            commands::list_claude_sessions,
+            commands::fork_claude_session,
+            commands::read_background_output,
+            commands::file_diff,
+            commands::open_path,
+            commands::set_badge_count,
+            commands::open_devcontainer_shell,
+            commands::open_port_url,
+            commands::active_cwd,
+            commands::claude_integration_status,
+            commands::install_claude_plugin,
+            commands::redraw_terminals,
         ])
         .on_window_event(|window, event| {
             // Intercept the window's red-X close: if any pane has a foreground
@@ -114,11 +146,17 @@ pub fn run() {
                 }
             }
         })
-        .setup(|app| {
+        .setup(move |app| {
             let handle = app.handle().clone();
-            commands::bootstrap(handle)?;
+            commands::bootstrap(handle.clone())?;
+            wake::install(&handle, wake_watch);
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("failed to run TermPane application");
+        .build(tauri::generate_context!())
+        .expect("failed to build TermPane application")
+        .run(|_app, event| {
+            if let RunEvent::Exit = event {
+                control::remove_own_socket();
+            }
+        });
 }

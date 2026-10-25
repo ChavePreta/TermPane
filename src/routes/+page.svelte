@@ -7,9 +7,19 @@
   import ConfirmDialog from "$lib/components/ConfirmDialog.svelte";
   import PreferencesDialog from "$lib/components/PreferencesDialog.svelte";
   import ShortcutsDialog from "$lib/components/ShortcutsDialog.svelte";
+  import FilesDialog from "$lib/components/FilesDialog.svelte";
+  import ResumeDialog from "$lib/components/ResumeDialog.svelte";
   import StatusBar from "$lib/components/StatusBar.svelte";
-  import { terminals, activeId, aggregateForeground, selectTerminal } from "$lib/store";
-  import { clearAttention } from "$lib/attention";
+  import KeyboardShortcutsDialog from "$lib/components/KeyboardShortcutsDialog.svelte";
+  import {
+    terminals,
+    activeId,
+    aggregateForeground,
+    selectTerminal,
+    needsYou,
+  } from "$lib/store";
+  import { clearAttention, signalNotification, attentionTerminals } from "$lib/attention";
+  import type { ClaudeStatus } from "$lib/api";
   import {
     loadPreferences,
     installPreferencesListener,
@@ -29,8 +39,14 @@
     onPaneStats,
     onTerminalsReordered,
     onAppCloseRequested,
+    onSystemWoke,
+    onPaneClaude,
+    onTerminalFocusRequested,
+    onShowShortcutsRequested,
+    onPaneContext,
   } from "$lib/api";
-  import { getPaneActions } from "$lib/paneActions";
+  import { getPaneActions, recoverAllPanes } from "$lib/paneActions";
+  import { uiRequest } from "$lib/uiRequests";
   import { preferences, savePreferences } from "$lib/preferences";
   import type { UnlistenFn } from "@tauri-apps/api/event";
 
@@ -41,6 +57,10 @@
   let pending = $state<PendingAction | null>(null);
   let prefsOpen = $state(false);
   let shortcutsOpen = $state(false);
+  let filesFor = $state<string | null>(null);
+  let filesAutoStage = $state(false);
+  let resumeOpen = $state(false);
+  let keysOpen = $state(false);
   let quitRunning = $state<string[] | null>(null);
   let unlisteners: UnlistenFn[] = [];
 
@@ -64,10 +84,96 @@
   });
 
   // A bell can flag the active terminal while the window is backgrounded; clear
-  // it once the window regains focus and the user is looking again.
+  // it once the window regains focus and the user is looking again. Regaining
+  // focus is also a wake signal, so repaint every pane (see handleVisibility).
   function handleWindowFocus() {
     const id = get(activeId);
     if (id) clearAttention(id);
+    recoverAllPanes(false);
+  }
+
+  // WKWebView maps window occlusion (display sleep, hibernate, minimize) to the
+  // Page Visibility API, so a wake surfaces as visibilitychange -> "visible".
+  // On wake the GPU context can be silently lost or the compositor can leave
+  // panes painted white; force a full repaint + WebGL recreation on each pane.
+  function handleVisibility() {
+    if (document.visibilityState === "visible") recoverAllPanes(true);
+  }
+
+  // Dock badge: tabs that need the user — flagged by a bell / notification
+  // while unwatched, or Claude asking for permission / input.
+  let badgeCount = $derived(
+    $terminals.filter(
+      (t) => $attentionTerminals.get(t.id)?.persistent || needsYou(t),
+    ).length,
+  );
+  let lastBadge = -1;
+  $effect(() => {
+    const n = badgeCount;
+    if (n === lastBadge) return;
+    lastBadge = n;
+    api.setBadgeCount(n).catch((e) => console.error("setBadgeCount:", e));
+  });
+
+  // Requests from a pane's ⋯ menu for UI this page owns.
+  $effect(() => {
+    const req = $uiRequest;
+    if (!req) return;
+    uiRequest.set(null);
+    if (req.kind === "files") {
+      filesAutoStage = req.autoStage;
+      filesFor = req.terminalId;
+    } else {
+      const t = get(terminals).find((x) => x.id === req.terminalId);
+      if (!t) return;
+      pending =
+        t.panes.length > 1
+          ? { kind: "pane", terminalId: t.id, paneId: req.paneId }
+          : { kind: "terminal", terminalId: t.id };
+    }
+  });
+
+  // Claude moving into a state that wants the user flags the card like a bell
+  // (pulse, persistent dot when unwatched, OS notification when unfocused).
+  const CLAUDE_ALERTS: Partial<Record<ClaudeStatus, string>> = {
+    permission: "Claude needs your permission",
+    waiting: "Claude is waiting for your input",
+    done: "Claude finished",
+  };
+  const lastClaudeStatus = new Map<string, ClaudeStatus>();
+
+  function handleClaudeChange(terminalId: string, paneId: string, status: ClaudeStatus | null) {
+    const prev = lastClaudeStatus.get(paneId);
+    if (status) lastClaudeStatus.set(paneId, status);
+    else lastClaudeStatus.delete(paneId);
+    if (!status || status === prev) return;
+    const alert = CLAUDE_ALERTS[status];
+    if (alert) signalNotification(terminalId, alert);
+  }
+
+  async function openSubTab(parentId: string) {
+    try {
+      const snap = await api.openTerminal({ parentId });
+      await selectTerminal(snap.id);
+    } catch (err) {
+      console.error("open sub-tab:", err);
+    }
+  }
+
+  // Next tab, after the active one (wrapping), that wants the user: marked
+  // unread, flagged by a bell/notification, or Claude asking for input.
+  async function jumpToNextAttention() {
+    const list = get(terminals);
+    if (list.length === 0) return;
+    const flags = get(attentionTerminals);
+    const start = list.findIndex((t) => t.id === get(activeId));
+    for (let i = 1; i < list.length; i++) {
+      const t = list[(start + i + list.length) % list.length];
+      if (t.markedUnread || flags.get(t.id)?.persistent || needsYou(t)) {
+        await selectTerminal(t.id);
+        return;
+      }
+    }
   }
 
   let confirmTitle = $derived(
@@ -88,7 +194,12 @@
     const paneCount = pendingTerminal.panes.length;
     const running = fg ? `\nRunning: ${fg}` : "";
     const panes = paneCount > 1 ? `\n${paneCount} panes open.` : "";
-    return `Are you sure you want to close ${pendingTerminal.label}?${panes}${running}`;
+    const subTabs = $terminals.filter((t) => t.parentId === pendingTerminal.id).length;
+    const nested =
+      subTabs > 0
+        ? `\nIts ${subTabs} sub-tab${subTabs === 1 ? "" : "s"} will stay open and move up a level.`
+        : "";
+    return `Are you sure you want to close ${pendingTerminal.label}?${panes}${running}${nested}`;
   });
 
   onMount(async () => {
@@ -122,10 +233,32 @@
       await onAppCloseRequested((running) => {
         quitRunning = running;
       }),
+      // A macOS system wake. Repaint every pane from inside a requestAnimationFrame
+      // — which only fires once the compositor is painting again — then ack the
+      // backend. If the WebContent process died on hibernate, JS never runs this
+      // and no ack arrives, so the backend reloads the webview as a last resort
+      // (see wake.rs). The rAF ack is what preserves scrollback in the common,
+      // recoverable case instead of forcing a reload every wake.
+      await onSystemWoke((generation) => {
+        requestAnimationFrame(() => {
+          recoverAllPanes(true);
+          api.ackWoke(generation).catch((e) => console.error("ackWoke:", e));
+        });
+      }),
+      await onPaneClaude(({ terminalId, paneId, claude }) => {
+        terminals.setPaneClaude(terminalId, paneId, claude);
+        handleClaudeChange(terminalId, paneId, claude?.status ?? null);
+      }),
+      await onTerminalFocusRequested((id) => void selectTerminal(id)),
+      await onShowShortcutsRequested(() => (keysOpen = true)),
+      await onPaneContext((c) => terminals.setPaneContext(c)),
     );
 
     const list = await api.listTerminals();
     terminals.set(list);
+    for (const t of list) {
+      for (const p of t.panes) if (p.claude) lastClaudeStatus.set(p.id, p.claude.status);
+    }
     const active = await api.activeTerminal();
     if (active) activeId.set(active);
     else if (list[0]) activeId.set(list[0].id);
@@ -133,6 +266,7 @@
     window.addEventListener("keydown", handleKeydown, { capture: true });
     window.addEventListener("contextmenu", handleContextMenu);
     window.addEventListener("focus", handleWindowFocus);
+    document.addEventListener("visibilitychange", handleVisibility);
   });
 
   onDestroy(() => {
@@ -140,6 +274,7 @@
     window.removeEventListener("keydown", handleKeydown, { capture: true });
     window.removeEventListener("contextmenu", handleContextMenu);
     window.removeEventListener("focus", handleWindowFocus);
+    document.removeEventListener("visibilitychange", handleVisibility);
   });
 
   function handleContextMenu(e: MouseEvent) {
@@ -212,12 +347,85 @@
       if (e.key === "t" || e.key === "T") {
         e.preventDefault();
         e.stopPropagation();
+        if (subShift) {
+          await openSubTab(term.id);
+          return;
+        }
         try {
           const snap = await api.openTerminal();
           activeId.set(snap.id);
         } catch (err) {
           console.error("new terminal erro:", err);
         }
+        return;
+      }
+      if (subShift && e.code === "KeyU") {
+        e.preventDefault();
+        e.stopPropagation();
+        api
+          .setTerminalUnread(term.id, !term.markedUnread)
+          .catch((err) => console.error("setTerminalUnread:", err));
+        return;
+      }
+      if (subShift && e.code === "KeyS") {
+        e.preventDefault();
+        e.stopPropagation();
+        filesAutoStage = true;
+        filesFor = term.id;
+        return;
+      }
+      if (subShift && e.code === "KeyO") {
+        e.preventDefault();
+        e.stopPropagation();
+        resumeOpen = true;
+        return;
+      }
+      // Previous / next prompt typed to Claude in the active pane:
+      // Mac ⌘↑/⌘↓, Linux Ctrl+Shift+↑/↓.
+      if (!subShift && (e.code === "ArrowUp" || e.code === "ArrowDown")) {
+        e.preventDefault();
+        e.stopPropagation();
+        getPaneActions(term.activePane)?.jumpToPrompt(e.code === "ArrowUp" ? -1 : 1);
+        return;
+      }
+      // Copy exactly as displayed (plain copy joins rows a program wrapped):
+      // Mac ⌘⇧C, Linux Ctrl+Shift+Alt+C.
+      if (subShift && e.code === "KeyC") {
+        e.preventDefault();
+        e.stopPropagation();
+        getPaneActions(term.activePane)?.copyRaw();
+        return;
+      }
+      // Find in scrollback: Mac ⌘F / ⌘G / ⌘⇧G, Linux Ctrl+Shift+F / G / +Alt+G.
+      if (!subShift && e.code === "KeyF") {
+        e.preventDefault();
+        e.stopPropagation();
+        getPaneActions(term.activePane)?.openSearch();
+        return;
+      }
+      if (e.code === "KeyG") {
+        e.preventDefault();
+        e.stopPropagation();
+        getPaneActions(term.activePane)?.searchStep(subShift ? -1 : 1);
+        return;
+      }
+      if (subShift && e.code === "KeyL") {
+        e.preventDefault();
+        e.stopPropagation();
+        getPaneActions(term.activePane)?.togglePromptList();
+        return;
+      }
+      // Start / end of the scrollback: Mac ⌘Home/⌘End, Linux Ctrl+Shift+Home/End.
+      if (!subShift && (e.code === "Home" || e.code === "End")) {
+        e.preventDefault();
+        e.stopPropagation();
+        getPaneActions(term.activePane)?.scrollToEdge(e.code === "Home" ? "top" : "bottom");
+        return;
+      }
+      if (!subShift && e.code === "KeyJ") {
+        e.preventDefault();
+        e.stopPropagation();
+        await jumpToNextAttention();
         return;
       }
       if (e.key === "k" || e.key === "K") {
@@ -351,6 +559,11 @@
         (pending = { kind: "terminal", terminalId: id })}
       onOpenPreferences={() => (prefsOpen = true)}
       onManageShortcuts={() => (shortcutsOpen = true)}
+      onOpenFiles={(id) => {
+        filesAutoStage = false;
+        filesFor = id;
+      }}
+      onOpenResume={() => (resumeOpen = true)}
     />
   {/if}
   <section class="content">
@@ -381,7 +594,7 @@
         </div>
       {/each}
     </div>
-    <StatusBar />
+    <StatusBar onShowShortcuts={() => (keysOpen = true)} />
   </section>
 </main>
 
@@ -407,3 +620,13 @@
 <PreferencesDialog open={prefsOpen} onClose={() => (prefsOpen = false)} />
 
 <ShortcutsDialog open={shortcutsOpen} onClose={() => (shortcutsOpen = false)} />
+
+<FilesDialog
+  terminalId={filesFor}
+  autoStage={filesAutoStage}
+  onClose={() => (filesFor = null)}
+/>
+
+<ResumeDialog open={resumeOpen} onClose={() => (resumeOpen = false)} />
+
+<KeyboardShortcutsDialog open={keysOpen} onClose={() => (keysOpen = false)} />

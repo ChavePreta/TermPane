@@ -12,7 +12,11 @@ pub struct SpawnResult {
 
 /// Spawns a shell attached to a PTY. Uses `shell_override` if given and non-empty,
 /// otherwise the user's default shell ($SHELL, falling back to /bin/zsh).
-pub fn spawn_shell(cwd: Option<&str>, shell_override: Option<&str>) -> anyhow::Result<SpawnResult> {
+pub fn spawn_shell(
+    cwd: Option<&str>,
+    shell_override: Option<&str>,
+    extra_env: &[(&str, String)],
+) -> anyhow::Result<SpawnResult> {
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -38,13 +42,22 @@ pub fn spawn_shell(cwd: Option<&str>, shell_override: Option<&str>) -> anyhow::R
         cmd.cwd(p);
     }
 
+    // CommandBuilder starts from a copy of this process's environment, so the
+    // markers must be removed explicitly — skipping them here isn't enough.
     for (k, v) in std::env::vars_os() {
+        if k.to_str().is_some_and(is_claude_session_marker) {
+            cmd.env_remove(&k);
+            continue;
+        }
         cmd.env(k, v);
     }
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("TERM_PROGRAM", "TermPane");
     cmd.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
 
     // GUI apps launched by launchd (macOS) or a non-login session (Linux) often
     // do not inherit a UTF-8 locale. Without it, zsh in emacs keymap treats
@@ -88,6 +101,30 @@ pub fn spawn_shell(cwd: Option<&str>, shell_override: Option<&str>) -> anyhow::R
         child,
         pid,
     })
+}
+
+/// Per-session runtime markers Claude Code sets in its own environment. When
+/// TermPane is launched from inside a Claude session (e.g. `npm run tauri dev`
+/// run by Claude), passing them on would make every `claude` started in a
+/// TermPane shell believe it is a child of that session — it then disables
+/// transcript saving and talks to the parent's messaging socket. User-level
+/// configuration (`CLAUDE_CODE_USE_BEDROCK`, `ANTHROPIC_*`, …) is kept.
+fn is_claude_session_marker(name: &str) -> bool {
+    matches!(
+        name,
+        "CLAUDECODE"
+            | "CLAUDE_PID"
+            | "CLAUDE_EFFORT"
+            | "CLAUDE_CODE_ENTRYPOINT"
+            | "CLAUDE_CODE_EXECPATH"
+            | "CLAUDE_CODE_SESSION_ID"
+            | "CLAUDE_CODE_CHILD_SESSION"
+            | "CLAUDE_CODE_SESSION_ATTENDED"
+            | "CLAUDE_CODE_BRIDGE_SESSION_ID"
+            | "CLAUDE_CODE_MESSAGING_SOCKET"
+            | "CLAUDE_CODE_MESSAGING_TOKEN"
+            | "CLAUDE_CODE_SSE_PORT"
+    )
 }
 
 fn looks_utf8(s: &str) -> bool {

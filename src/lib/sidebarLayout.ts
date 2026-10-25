@@ -48,3 +48,35 @@ if (browser) {
     } catch {}
   });
 }
+
+// Tabs whose sub-tabs are hidden in the sidebar.
+const COLLAPSED_TABS_KEY = "termpane.sidebar.collapsedTabs";
+
+function initialCollapsedTabs(): Set<string> {
+  if (!browser) return new Set();
+  try {
+    const raw = localStorage.getItem(COLLAPSED_TABS_KEY);
+    return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+export const collapsedTabs = writable<Set<string>>(initialCollapsedTabs());
+
+export function toggleCollapsedTab(id: string) {
+  collapsedTabs.update((s) => {
+    const next = new Set(s);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
+}
+
+if (browser) {
+  collapsedTabs.subscribe((s) => {
+    try {
+      localStorage.setItem(COLLAPSED_TABS_KEY, JSON.stringify([...s]));
+    } catch {}
+  });
+}

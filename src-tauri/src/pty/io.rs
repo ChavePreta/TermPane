@@ -1,15 +1,28 @@
+use super::backlog::Backlog;
 use crate::model::PaneId;
 use base64::Engine;
+use parking_lot::Mutex;
+use serde::Serialize;
 use std::io::Read;
+use std::sync::Arc;
 use std::thread;
 use tauri::{AppHandle, Emitter};
 
-/// Spawns an OS thread that reads from the (sync) reader and emits chunks to
-/// the frontend as Tauri events `pty:output:<pane_id>` with base64 payload.
+/// One PTY output chunk. `o` is the stream offset of the chunk's first byte, so
+/// a view that replays the backlog can drop chunks it has already seen.
+#[derive(Serialize, Clone)]
+struct OutputChunk {
+    o: u64,
+    d: String,
+}
+
+/// Spawns an OS thread that reads from the (sync) reader, appends each chunk to
+/// the pane's backlog, and emits it to the frontend as `pty:output:<pane_id>`.
 /// When the read returns EOF/error, emits `pty:exit:<pane_id>`.
 pub fn start_reader_thread(
     app: AppHandle,
     pane_id: PaneId,
+    backlog: Arc<Mutex<Backlog>>,
     mut reader: Box<dyn Read + Send>,
 ) -> thread::JoinHandle<()> {
     let output_event = format!("pty:output:{}", pane_id);
@@ -26,9 +39,9 @@ pub fn start_reader_thread(
                         break;
                     }
                     Ok(n) => {
-                        let b64 =
-                            base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
-                        if let Err(e) = app.emit(&output_event, b64) {
+                        let o = backlog.lock().push(&buf[..n]);
+                        let d = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
+                        if let Err(e) = app.emit(&output_event, OutputChunk { o, d }) {
                             tracing::warn!("emit {} failed: {}", output_event, e);
                             break;
                         }

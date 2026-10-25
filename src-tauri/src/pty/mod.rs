@@ -1,3 +1,4 @@
+pub mod backlog;
 pub mod io;
 pub mod spawn;
 
@@ -7,6 +8,7 @@ use std::io::Write;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
+pub use backlog::Backlog;
 pub use spawn::{spawn_shell, SpawnResult};
 
 /// Live handle for a PTY: master + child + writer + reader-thread.
@@ -18,6 +20,7 @@ pub struct PtyHandle {
     // One-shot command run after the frontend subscribes to this pane's output
     // (taken via take_startup_command). None for splits and plain terminals.
     startup_command: Mutex<Option<String>>,
+    pub backlog: Arc<Mutex<Backlog>>,
     _reader_thread: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -27,6 +30,7 @@ impl PtyHandle {
         writer: Box<dyn Write + Send>,
         child: Box<dyn Child + Send + Sync>,
         shell_pid: Option<u32>,
+        backlog: Arc<Mutex<Backlog>>,
         reader_thread: JoinHandle<()>,
     ) -> Self {
         Self {
@@ -35,6 +39,7 @@ impl PtyHandle {
             child: Mutex::new(child),
             shell_pid,
             startup_command: Mutex::new(None),
+            backlog,
             _reader_thread: Mutex::new(Some(reader_thread)),
         }
     }
@@ -64,6 +69,10 @@ impl PtyHandle {
             .lock()
             .resize(size)
             .map_err(|e| anyhow::anyhow!("failed to resize PTY: {e}"))
+    }
+
+    pub fn cols(&self) -> Option<u16> {
+        self.master.lock().get_size().ok().map(|s| s.cols)
     }
 
     /// PID of the leader of the foreground process group on the TTY (Unix only).

@@ -53,6 +53,14 @@
     rows = rows.filter((r) => r.id !== id);
   }
 
+  function moveRow(index: number, delta: number) {
+    const j = index + delta;
+    if (j < 0 || j >= rows.length) return;
+    const next = [...rows];
+    [next[index], next[j]] = [next[j], next[index]];
+    rows = next;
+  }
+
   async function handleSave() {
     saving = true;
     error = null;
@@ -109,20 +117,49 @@
       </p>
 
       <div class="list">
-        {#each rows as row (row.id)}
+        {#each rows as row, i (row.id)}
           <div class="shortcut" class:expanded={row.expanded}>
-            <button
-              class="shortcut-header"
-              aria-expanded={row.expanded}
-              onclick={() => (row.expanded = !row.expanded)}
-            >
-              <span class="title" class:untitled={!row.name.trim()}>
-                {row.name.trim() || "Untitled"}
-              </span>
-              <span class="toggle" aria-hidden="true">
-                {row.expanded ? "−" : "+"}
-              </span>
-            </button>
+            <div class="shortcut-header">
+              <button
+                class="shortcut-toggle"
+                aria-expanded={row.expanded}
+                onclick={() => (row.expanded = !row.expanded)}
+              >
+                <span class="title" class:untitled={!row.name.trim()}>
+                  {row.name.trim() || "Untitled"}
+                </span>
+              </button>
+              <button
+                type="button"
+                class="move"
+                aria-label="Move up"
+                title="Move up"
+                disabled={i === 0}
+                onclick={() => moveRow(i, -1)}
+              >
+                ↑
+              </button>
+              <button
+                type="button"
+                class="move"
+                aria-label="Move down"
+                title="Move down"
+                disabled={i === rows.length - 1}
+                onclick={() => moveRow(i, 1)}
+              >
+                ↓
+              </button>
+              <button
+                type="button"
+                class="toggle-btn"
+                aria-label={row.expanded ? "Collapse" : "Expand"}
+                onclick={() => (row.expanded = !row.expanded)}
+              >
+                <span class="toggle" aria-hidden="true">
+                  {row.expanded ? "−" : "+"}
+                </span>
+              </button>
+            </div>
 
             {#if row.expanded}
               <div class="shortcut-body">
@@ -232,19 +269,54 @@
 
   .shortcut-header {
     display: flex;
+    align-items: stretch;
+  }
+
+  .shortcut-toggle {
+    display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    width: 100%;
-    padding: 9px 11px;
+    flex: 1;
+    min-width: 0;
+    padding: 9px 4px 9px 11px;
     color: var(--fg);
     text-align: left;
     font-size: 13px;
     transition: background 0.12s;
   }
 
-  .shortcut-header:hover {
+  .shortcut-toggle:hover {
     background: var(--bg-hover);
+  }
+
+  .move,
+  .toggle-btn {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--fg-muted);
+    transition: background 0.12s, color 0.12s;
+  }
+
+  .move {
+    width: 22px;
+    font-size: 13px;
+    line-height: 1;
+    border-radius: 4px;
+    margin: 4px 0;
+  }
+
+  .move:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+
+  .toggle-btn {
+    padding: 0 9px 0 5px;
+  }
+
+  .toggle-btn:hover {
+    color: var(--fg);
   }
 
   .title {

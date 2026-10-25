@@ -9,6 +9,8 @@ export interface Preferences {
   lineHeight: number;
   cursorBlink: boolean;
   bellNotifications: boolean;
+  restoreSessions: boolean;
+  editorCommand: string;
 }
 
 const DEFAULT: Preferences = {
@@ -19,6 +21,8 @@ const DEFAULT: Preferences = {
   lineHeight: 1.15,
   cursorBlink: true,
   bellNotifications: true,
+  restoreSessions: true,
+  editorCommand: "",
 };
 
 const internal = writable<Preferences>(DEFAULT);

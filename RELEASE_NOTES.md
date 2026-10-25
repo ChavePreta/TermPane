@@ -1,3 +1,116 @@
+# Release Notes — v0.4.0 (2026-10-24)
+
+TermPane becomes a home for Claude Code: every tab shows what Claude is doing, tabs nest, you can see and stage the files each session changed, resume any past session, have Claude drive other tabs, and get all your tabs back after a crash. Plus fixes for black screens with many tabs and after hibernation.
+
+## ✨ New: See what Claude is doing in every tab
+
+Each tab running Claude Code now shows its state right on the card: a spinner while Claude thinks or works, the tool it's running (`Bash: npm test`, `Edit state.rs`), an amber marker when it **needs your permission**, and a green one when it's **done**. Permission requests, "waiting for you" and "done" light up the card and send a notification when TermPane is in the background — no more bell script needed.
+
+Turn it on once in **Preferences → Claude Code integration → Install Claude Code plugin**. TermPane installs its own Claude Code plugin — one plugin that powers everything below — and Claude sessions started afterwards pick it up (run `/reload-plugins` in ones already open). Outside TermPane the plugin stays out of the way and does nothing.
+
+New tabs also follow Claude: if Claude moved into a git worktree, a new tab or split opened from it starts **in the worktree**, not the original folder.
+
+## ✨ New: Sub-tabs
+
+Keep Claude in one tab and its dev server, tests or a plain shell nested right under it. **⌘⇧T** (or right-click a card → **New sub-tab**) opens a sub-tab in the same working directory. Sub-tabs are indented under their parent and can be collapsed with the little arrow. Drag a card between a tab and its sub-tabs to nest it, or between top-level tabs to un-nest it. Closing a tab keeps its sub-tabs open.
+
+## ✨ New: Files Claude changed, per tab — and stage them
+
+The pencil badge on a card shows how many files Claude changed in that tab. Click it (or press **⌘⇧S**) to see the list and **Stage** them with one click. It works even with several Claude sessions in the same folder: each tab lists only what its own session wrote, and a file that another tab also edited is flagged and never staged automatically. (Edits made through shell commands, like a formatter, aren't tracked.)
+
+## ✨ New: Resume a Claude session
+
+The clock button at the top of the sidebar (or **⌘⇧O**) lists your past Claude Code sessions — with their titles, folders, branches and when they were last used — starting with the ones from the project you're in. Pick one and it reopens in a new tab with `claude --resume`.
+
+## ✨ New: Claude can work with your other tabs
+
+With the plugin installed, Claude (in any tab, any window) can list your TermPane tabs, read what another tab printed, type commands into it, open new tabs or sub-tabs, bring one to the front, or close it. For example: ask Claude to start the dev server in a sub-tab and check its output for errors. Each action goes through Claude Code's usual permission prompts.
+
+## ✨ New: `/fork` opens the copy right next to you
+
+Type `/fork` in a Claude session running in TermPane and the copy opens in a new sub-tab nested under the current one, named **FORK - <tab name>**, already resumed with the whole conversation so far — so you can try a different direction without losing the original. Add a prompt (`/fork try it with SQLite instead`) to start the copy on it. Outside TermPane, `/fork` works exactly as before.
+
+## ✨ New: Your tabs come back after a crash or restart
+
+If TermPane quits, crashes or the Mac restarts, the next launch reopens your tabs, sub-tabs, splits and folders — and Claude sessions that were running are resumed automatically. A second TermPane window that's still open is never duplicated. Turn it off in **Preferences → "Reopen tabs after TermPane quits or crashes"**.
+
+## ✨ New: Find your own prompts in a long Claude session
+
+Claude's answers scroll your messages far up the screen. While Claude runs in a pane, small ▲/▼ arrows on its right edge (or **⌘↑ / ⌘↓**) jump straight to the previous or next prompt you typed, briefly highlighting it. Buttons above and below them (or **⌘Home / ⌘End**) take you to the very start or end of the conversation.
+
+## ✨ New: Mark a tab as unread
+
+Right-click a card → **Mark as unread** (or **⌘⇧U**) to park it and come back later — it keeps a ring and a bold name until you clear it. **⌘J** jumps to the next tab that needs you: marked unread, flagged by a notification, or Claude waiting.
+
+## ✨ New: A menu on every pane
+
+The **⋯** button in the top-right corner of each pane lists everything you can do there — split, move the pane to its own tab, open a sub-tab, mark the tab unread, jump between your Claude prompts, fork the Claude session into a sub-tab, see the files Claude changed, clear, redraw, close — with each action's shortcut next to it, so the menu doubles as a cheat sheet.
+
+## ✨ New: More context on every tab
+
+- **Tabs name themselves.** Run Claude in a tab — or pick a session in `claude --resume` — and the tab takes that session's title ("Fix login redirect…"), whichever shortcut opened it. Rename a tab yourself and it keeps your name. Rename a tab and its Claude session gets a matching, longer name — with the project and branch — so it's easy to find in `/resume`.
+- **Branch and worktree** under each tab's name: `main`, or `worktree: feat-x` when Claude moved into a worktree.
+- **Open ports** right on the card — `127.0.0.1:5173` for your dev server — click to open it in the browser.
+- **Dock badge** with how many tabs are waiting for you.
+
+## ✨ New: Works with Dev Containers
+
+If your project has a `devcontainer.json`, TermPane uses it: ports show the names you gave them ("App", "Redis") and open at the right address, and the pane menu gets **Open shell in dev container**, which drops you into the container at the project folder — reusing a container that's already running instead of restarting it.
+
+## ✨ New: Copy Claude's code with one click
+
+Every code block Claude writes gets a small copy button at its top-right corner. It copies the code exactly as Claude wrote it — indentation, blank lines and long lines intact — not as the screen happened to wrap it. The **{ }** button on the pane lists all code blocks from the session, for the ones that have scrolled away.
+
+## ✨ Fixed: Copying a long command
+
+When Claude shows a command too long for one line, it breaks it across lines itself — so copying it used to give you several lines. Now **⌘C** puts it back together as one line. Need it exactly as on screen? **⌘⇧C**.
+
+## ✨ New: Find things faster
+
+- **⌘F** searches the scrollback of the current pane.
+- **⌘-click a file path** like `src/app.ts:42` in the output to open it in your editor at that line (choose the editor in Preferences; VS Code by default).
+- **Your prompts, listed** (**⌘⇧L**): every message you sent Claude in that pane, one click to jump back to it.
+- **Diffs** for each file a Claude session changed, right in the Files dialog.
+
+## ✨ New: Watch Claude's background work
+
+When Claude runs a command or a helper agent in the background, a small spy button appears on the pane. Click it to watch that work live in a read-only window — command output as it streams, or an agent's steps as readable text. Artifacts Claude publishes in the session are listed too, one click to open each in the browser.
+
+## ✨ Changed: Shortcuts in one place
+
+The status bar no longer lists shortcuts in a long row. Click **Keyboard shortcuts** in it — or press **⌘?** (Help → Keyboard Shortcuts) — to see them all, grouped by what they do.
+
+## 🐛 Fixed: Black panes after hibernation
+
+After waking from hibernation, panes could come back black. TermPane now gives the GPU a moment to come back before using it again, drawing with the regular renderer in the meantime. And if a window ever does end up blank, **View → Redraw Terminals** (**⌘⇧R**) redraws everything **without losing your scrollback**.
+
+## 🐛 Fixed: Screen going black for a few seconds with many tabs open
+
+With a lot of terminals open, the window could go black for a few seconds and then come back — sometimes over and over. Every terminal (even the hidden ones) was holding its own GPU renderer, and macOS only allows a limited number of those per window; past that limit it silently kills the oldest one, which blanks it until TermPane falls back and retries — knocking out another one in the process.
+
+Now only the terminal you're looking at uses the GPU renderer (up to 8 panes at once); hidden terminals release theirs and pick it back up when you switch to them. Any extra panes beyond the limit simply use the regular renderer. You can open as many tabs as you like.
+
+## 🐛 Fixed: White screen after the Mac wakes from sleep
+
+v0.3.1 tried to fix the blank pane after wake, but the fix only reacted to the WebGL renderer's context-loss event — and macOS/WebKit doesn't reliably fire it on wake. It also did nothing for the worst case: after a hibernation, macOS can outright kill the window's rendering process, leaving the whole window white with just the title bar.
+
+TermPane now recovers in two layers:
+
+- **The recoverable case** — the page is alive but not drawing (GPU context loss, a stalled compositor). The moment the window wakes, every terminal rebuilds its GPU renderer and forces a full repaint, **keeping all your scrollback**.
+- **The dead case** — the rendering process was terminated on hibernation, so nothing in the window can run. TermPane now watches for the system wake from the native side and, if the window doesn't paint a frame within a couple of seconds, reloads it automatically. Your shells keep running the whole time (they live in TermPane's core process, not the window), so the terminals come right back attached to the same live sessions — the only thing lost is the scrolled-back history that was on screen, and only when the window was truly dead.
+
+In short: no more permanent white screen, and scrollback is preserved whenever it possibly can be.
+
+## ✨ New: Reorder your custom shortcuts
+
+The **Custom terminals** dialog now has ↑/↓ buttons on each shortcut so you can put your most-used ones first. The order you set is saved and is the same order they appear in the **+ custom** menu.
+
+## ✨ Changed: Cleaner names for shortcut terminals
+
+Opening a terminal from a custom shortcut now names the card with just the shortcut's name (e.g. **MyServer**) instead of appending a number like `MyServer#42`. Plain **+ New terminal** cards still use the numbered `Term#N` names.
+
+---
+
 # Release Notes — v0.3.1 (2026-06-26)
 
 A small, focused release: terminals now flag you when they need attention (great for long-running Claude Code sessions), you can save custom shortcuts to launch preconfigured terminals, open a second independent window, a long-standing wake-from-sleep rendering bug is fixed, and the terminal viewport gets a proper themed scrollbar.

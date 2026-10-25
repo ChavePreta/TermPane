@@ -1,5 +1,12 @@
 <script lang="ts">
-  import { terminals, activeId, selectTerminal } from "../store";
+  import {
+    terminals,
+    activeId,
+    selectTerminal,
+    terminalDepths,
+    subtreeIds,
+  } from "../store";
+  import type { TerminalSnapshot } from "../api";
   import { api } from "../api";
   import { dropTargetPaneId } from "../dragState";
   import { platform, shortcut } from "../platform";
@@ -8,15 +15,109 @@
   import PinButton from "./PinButton.svelte";
   import LinkButtons from "./LinkButtons.svelte";
   import CustomTerminalMenu from "./CustomTerminalMenu.svelte";
-  import { sidebarCollapsed, sidebarWidth } from "../sidebarLayout";
+  import TabContextMenu from "./TabContextMenu.svelte";
+  import {
+    sidebarCollapsed,
+    sidebarWidth,
+    collapsedTabs,
+    toggleCollapsedTab,
+  } from "../sidebarLayout";
 
   type Props = {
     onRequestClose: (id: string) => void;
     onOpenPreferences: () => void;
     onManageShortcuts: () => void;
+    onOpenFiles: (terminalId: string) => void;
+    onOpenResume: () => void;
   };
 
-  let { onRequestClose, onOpenPreferences, onManageShortcuts }: Props = $props();
+  let {
+    onRequestClose,
+    onOpenPreferences,
+    onManageShortcuts,
+    onOpenFiles,
+    onOpenResume,
+  }: Props = $props();
+
+  let depths = $derived(terminalDepths($terminals));
+  let parentIds = $derived(
+    new Set($terminals.map((t) => t.parentId).filter((p): p is string => !!p)),
+  );
+  // Cards shown in the sidebar: everything except descendants of a collapsed tab.
+  let visible = $derived.by(() => {
+    const hidden = new Set<string>();
+    for (const t of $terminals) {
+      if (t.parentId && (hidden.has(t.parentId) || $collapsedTabs.has(t.parentId))) {
+        hidden.add(t.id);
+      }
+    }
+    return $terminals.filter((t) => !hidden.has(t.id));
+  });
+
+  let menu = $state<{ x: number; y: number; terminal: TerminalSnapshot } | null>(null);
+
+  const mod = (mac: string, linux: string) => shortcut($platform, mac, linux);
+
+  type MenuItem = { label: string; hint?: string; danger?: boolean; run: () => void };
+
+  let menuItems = $derived.by((): MenuItem[] => {
+    if (!menu) return [];
+    const t = menu.terminal;
+    const items: MenuItem[] = [
+      {
+        label: "New sub-tab",
+        hint: mod("⌘⇧T", "Ctrl+Shift+Alt+T"),
+        run: () => openSubTab(t.id),
+      },
+      {
+        label: t.markedUnread ? "Mark as read" : "Mark as unread",
+        hint: mod("⌘⇧U", "Ctrl+Shift+Alt+U"),
+        run: () =>
+          api.setTerminalUnread(t.id, !t.markedUnread).catch((e) =>
+            console.error("setTerminalUnread:", e),
+          ),
+      },
+      { label: "Files changed by Claude…", run: () => onOpenFiles(t.id) },
+    ];
+    const devPane =
+      t.panes.find((p) => p.id === t.activePane && p.devContainer) ?? t.panes.find((p) => p.devContainer);
+    if (devPane) {
+      items.push({
+        label: `Open shell in dev container (${devPane.devContainer})`,
+        run: () =>
+          api
+            .openDevcontainerShell(devPane.id)
+            .then((snap) => selectTerminal(snap.id))
+            .catch((e) => console.error("dev container shell:", e)),
+      });
+    }
+    if (t.parentId) {
+      items.push({
+        label: "Move to top level",
+        run: () =>
+          api
+            .moveTerminal(t.id, null, $terminals.map((x) => x.id))
+            .catch((e) => console.error("moveTerminal:", e)),
+      });
+    }
+    items.push({ label: "Close", danger: true, run: () => onRequestClose(t.id) });
+    return items;
+  });
+
+  async function openSubTab(parentId: string) {
+    try {
+      const snap = await api.openTerminal({ parentId });
+      collapsedTabs.update((s) => {
+        if (!s.has(parentId)) return s;
+        const next = new Set(s);
+        next.delete(parentId);
+        return next;
+      });
+      await selectTerminal(snap.id);
+    } catch (e) {
+      console.error("open sub-tab:", e);
+    }
+  }
 
   let listEl: HTMLDivElement | null = $state(null);
 
@@ -84,10 +185,11 @@
     // Ignore pointerdown on input (edit mode) and on the close button.
     if (target.closest(".card-edit")) return;
     if (target.closest(".card-close")) return;
+    if (target.closest(".card-toggle, .card-files, .card-info")) return;
     const card = target.closest<HTMLElement>(".card[data-card-id]");
     if (!card) return;
     const id = card.dataset.cardId!;
-    const list = $terminals;
+    const list = visible;
     const idx = list.findIndex((t) => t.id === id);
     if (idx < 0) return;
     // Prevents the browser from starting text selection while dragging over cards.
@@ -177,23 +279,23 @@
 
     if (targetIdx === null) return;
 
-    const list = $terminals;
-    const orig = list.findIndex((t) => t.id === draggedId);
-    if (orig < 0) return;
-    // Normalize targetIdx: removing before the target position shifts it left.
-    let dest = targetIdx;
-    if (orig < dest) dest -= 1;
-    if (dest === orig) return;
-
-    const newIds = list.map((t) => t.id);
-    const [moved] = newIds.splice(orig, 1);
-    newIds.splice(dest, 0, moved);
-    // Aplica otimisticamente; backend confirma via terminals:reordered.
-    terminals.reorder(newIds);
+    // The dragged card moves with its whole subtree. It lands before the card
+    // under the drop indicator and takes that card's parent — so dropping
+    // between a tab and its first sub-tab nests it, and dropping between two
+    // top-level tabs (or at the end) makes it top level.
+    const all = $terminals;
+    const moving = new Set(subtreeIds(all, draggedId));
+    const below = visible.slice(targetIdx).find((t) => !moving.has(t.id)) ?? null;
+    const newParent = below?.parentId ?? null;
+    const order = all.filter((t) => !moving.has(t.id)).map((t) => t.id);
+    const block = all.filter((t) => moving.has(t.id)).map((t) => t.id);
+    order.splice(below ? order.indexOf(below.id) : order.length, 0, ...block);
+    const oldParent = all.find((t) => t.id === draggedId)?.parentId ?? null;
+    if (newParent === oldParent && order.every((id, i) => all[i].id === id)) return;
     try {
-      await api.reorderTerminals(newIds);
+      await api.moveTerminal(draggedId, newParent, order);
     } catch (e) {
-      console.error("reorderTerminals:", e);
+      console.error("moveTerminal:", e);
     }
   }
 </script>
@@ -203,6 +305,18 @@
     <span>TermPane</span>
     <div class="sidebar-tools">
       <PinButton />
+      <button
+        class="icon-btn"
+        title={`Resume a Claude session (${mod("⌘⇧O", "Ctrl+Shift+Alt+O")})`}
+        aria-label="Resume a Claude session"
+        onclick={onOpenResume}
+      >
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 3v5h5" />
+          <path d="M3.05 13A9 9 0 1 0 6 5.3L3 8" />
+          <path d="M12 7v5l3 2" />
+        </svg>
+      </button>
       <button
         class="icon-btn"
         title="Preferences"
@@ -233,19 +347,25 @@
     onpointerdown={handleListPointerDown}
     role="list"
   >
-    {#each $terminals as t, i (t.id)}
+    {#each visible as t, i (t.id)}
       {#if dragStarted && dropIndex === i}
-        <div class="drop-indicator"></div>
+        <div class="drop-indicator" style="margin-left: {4 + (depths.get(t.id) ?? 0) * 16}px"></div>
       {/if}
       <TerminalCard
         terminal={t}
         active={t.id === $activeId}
         dragging={dragId === t.id && dragStarted}
+        depth={depths.get(t.id) ?? 0}
+        hasChildren={parentIds.has(t.id)}
+        collapsed={$collapsedTabs.has(t.id)}
+        onToggleCollapse={() => toggleCollapsedTab(t.id)}
         onSelect={() => selectTerminal(t.id)}
         onRequestClose={() => onRequestClose(t.id)}
+        onContextMenu={(e) => (menu = { x: e.clientX, y: e.clientY, terminal: t })}
+        onOpenFiles={() => onOpenFiles(t.id)}
       />
     {/each}
-    {#if dragStarted && dropIndex !== null && dropIndex >= $terminals.length}
+    {#if dragStarted && dropIndex !== null && dropIndex >= visible.length}
       <div class="drop-indicator"></div>
     {/if}
   </div>
@@ -256,6 +376,9 @@
     </div>
     <LinkButtons />
   </div>
+  {#if menu}
+    <TabContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => (menu = null)} />
+  {/if}
   <div
     class="sidebar-resizer"
     class:active={resizing}

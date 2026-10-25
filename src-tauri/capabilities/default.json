@@ -12,7 +12,8 @@
         { "url": "https://buymeacoffee.com/*" },
         { "url": "https://github.com/*" },
         { "url": "https://termpane.com/*" },
-        { "url": "https://termpane.com" }
+        { "url": "https://termpane.com" },
+        { "url": "https://claude.ai/*" }
       ]
     }
   ]

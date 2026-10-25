@@ -1,6 +1,6 @@
 [package]
 name = "termpane"
-version = "0.3.1"
+version = "0.4.0"
 description = "TermPane — native, lightweight terminal manager (Tauri + portable-pty)"
 authors = ["jonas@silveira.eti.br"]
 edition = "2021"
@@ -24,7 +24,7 @@ bytes = "1"
 parking_lot = "0.12"
 sysinfo = "0.32"
 chrono = { version = "0.4", features = ["serde"] }
-nix = { version = "0.29", features = ["term", "process"] }
+nix = { version = "0.29", features = ["term", "process", "fs", "user"] }
 dirs = "5"
 thiserror = "1"
 anyhow = "1"
@@ -32,6 +32,17 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 base64 = "0.22"
 tauri-plugin-notification = "2"
+vt100 = "0.15"
+
+# Native macOS wake handling (recover the WKWebView after sleep/hibernate). All
+# of these are already pulled in transitively by wry at these exact versions, so
+# declaring them direct adds no new dependency to the build.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSNotification", "NSObject", "NSString"] }
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace"] }
+objc2-web-kit = { version = "0.3", features = ["WKWebView", "WKNavigation"] }
+block2 = "0.6"
 
 [profile.release]
 panic = "abort"

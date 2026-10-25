@@ -1,5 +1,14 @@
 import { writable, derived, get } from "svelte/store";
-import { api, type PaneStat, type TerminalSnapshot } from "./api";
+import {
+  api,
+  type ClaudeInfo,
+  type ClaudeStatus,
+  type GitInfo,
+  type PaneContext,
+  type PortInfo,
+  type PaneStat,
+  type TerminalSnapshot,
+} from "./api";
 
 function createTerminalsStore() {
   const { subscribe, update, set } = writable<TerminalSnapshot[]>([]);
@@ -36,6 +45,35 @@ function createTerminalsStore() {
             ),
           };
         }),
+      ),
+    setPaneClaude: (
+      terminalId: string,
+      paneId: string,
+      claude: ClaudeInfo | null,
+    ) =>
+      update((list) =>
+        list.map((t) => {
+          if (t.id !== terminalId) return t;
+          return {
+            ...t,
+            panes: t.panes.map((p) => (p.id === paneId ? { ...p, claude } : p)),
+          };
+        }),
+      ),
+    setPaneContext: (c: PaneContext) =>
+      update((list) =>
+        list.map((t) =>
+          t.id !== c.terminalId
+            ? t
+            : {
+                ...t,
+                panes: t.panes.map((p) =>
+                  p.id === c.paneId
+                    ? { ...p, git: c.git, ports: c.ports, devContainer: c.devContainer, cwd: c.cwd }
+                    : p,
+                ),
+              },
+        ),
       ),
     setPaneStats: (stats: PaneStat[]) => {
       if (stats.length === 0) return;
@@ -140,6 +178,87 @@ function layoutLeafOrder(
     for (const c of node.children) layoutLeafOrder(c, acc);
   }
   return acc;
+}
+
+// Most urgent first: what the card shows when several panes run Claude.
+const CLAUDE_PRIORITY: ClaudeStatus[] = [
+  "permission",
+  "waiting",
+  "tool",
+  "thinking",
+  "done",
+  "idle",
+  "ended",
+];
+
+/** The Claude session in this terminal that most needs to be shown. */
+export function terminalClaude(terminal: TerminalSnapshot): ClaudeInfo | null {
+  let best: ClaudeInfo | null = null;
+  for (const p of terminal.panes) {
+    const c = p.claude;
+    if (!c) continue;
+    if (
+      !best ||
+      CLAUDE_PRIORITY.indexOf(c.status) < CLAUDE_PRIORITY.indexOf(best.status)
+    ) {
+      best = c;
+    }
+  }
+  return best;
+}
+
+export function terminalFileCount(terminal: TerminalSnapshot): number {
+  const all = new Set<string>();
+  for (const p of terminal.panes) for (const f of p.claude?.files ?? []) all.add(f);
+  return all.size;
+}
+
+/** Git context of the terminal's active pane, else of any pane that has one. */
+export function terminalGit(terminal: TerminalSnapshot): GitInfo | null {
+  const active = terminal.panes.find((p) => p.id === terminal.activePane);
+  return active?.git ?? terminal.panes.find((p) => p.git)?.git ?? null;
+}
+
+/** Servers of all the terminal's panes, one per address. */
+export function terminalPorts(terminal: TerminalSnapshot): PortInfo[] {
+  const seen = new Map<string, PortInfo>();
+  for (const p of terminal.panes) for (const port of p.ports ?? []) seen.set(port.address, port);
+  return [...seen.values()];
+}
+
+export function needsYou(terminal: TerminalSnapshot): boolean {
+  return terminal.panes.some(
+    (p) => p.claude?.status === "permission" || p.claude?.status === "waiting",
+  );
+}
+
+/** Nesting depth of each terminal (0 = top level). */
+export function terminalDepths(list: TerminalSnapshot[]): Map<string, number> {
+  const byId = new Map(list.map((t) => [t.id, t]));
+  const depths = new Map<string, number>();
+  for (const t of list) {
+    let d = 0;
+    let cur = t.parentId ? byId.get(t.parentId) : undefined;
+    while (cur && d < list.length) {
+      d++;
+      cur = cur.parentId ? byId.get(cur.parentId) : undefined;
+    }
+    depths.set(t.id, d);
+  }
+  return depths;
+}
+
+/** `id` plus every descendant, in list (depth-first) order. */
+export function subtreeIds(list: TerminalSnapshot[], id: string): string[] {
+  const out = [id];
+  const inTree = new Set(out);
+  for (const t of list) {
+    if (t.parentId && inTree.has(t.parentId) && !inTree.has(t.id)) {
+      out.push(t.id);
+      inTree.add(t.id);
+    }
+  }
+  return out;
 }
 
 export function aggregateMemory(terminal: TerminalSnapshot): number {

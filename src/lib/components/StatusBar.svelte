@@ -13,6 +13,9 @@
     return v === null ? true : v === "1";
   }
 
+  type Props = { onShowShortcuts: () => void };
+  let { onShowShortcuts }: Props = $props();
+
   const visible = writable<boolean>(initial());
 
   if (browser) {
@@ -22,20 +25,6 @@
       } catch {}
     });
   }
-
-  type ShortcutSpec = { mac: string; linux: string; label: string };
-  const shortcuts: ShortcutSpec[] = [
-    { mac: "⌘N", linux: "Ctrl+Shift+N", label: "new window" },
-    { mac: "⌘T", linux: "Ctrl+Shift+T", label: "new terminal" },
-    { mac: "⌘D", linux: "Ctrl+Shift+D", label: "split vertical" },
-    { mac: "⌘⇧D", linux: "Ctrl+Shift+Alt+D", label: "split horizontal" },
-    { mac: "⌘/", linux: "Ctrl+Shift+/", label: "flip split" },
-    { mac: "⌘⇧E", linux: "Ctrl+Shift+Alt+E", label: "extract pane" },
-    { mac: "⌘K", linux: "Ctrl+Shift+K", label: "clear" },
-    { mac: "⌘⇧←/→", linux: "Ctrl+Shift+Alt+←/→", label: "switch terminal" },
-    { mac: "⌘W", linux: "Ctrl+Shift+W", label: "close pane" },
-    { mac: "⌘B", linux: "Ctrl+Shift+B", label: "toggle sidebar" },
-  ];
 
   function toggle() {
     visible.update((v) => !v);
@@ -49,14 +38,18 @@
 
 {#if $visible}
   <footer class="status-bar">
-    <div class="hints">
-      {#each shortcuts as s}
-        <span class="hint">
-          <kbd>{shortcut($platform, s.mac, s.linux)}</kbd>
-          <span class="hint-label">{s.label}</span>
-        </span>
-      {/each}
-    </div>
+    <button
+      class="help-btn"
+      onclick={onShowShortcuts}
+      title="Keyboard shortcuts"
+    >
+      <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="2" y="6" width="20" height="12" rx="2" />
+        <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10" />
+      </svg>
+      <span>Keyboard shortcuts</span>
+      <kbd>{shortcut($platform, "⌘?", "Ctrl+Shift+Alt+/")}</kbd>
+    </button>
     <div class="actions">
       {#if canBroadcast}
         <button
@@ -76,7 +69,7 @@
           <span>Broadcast{isBroadcasting ? ": on" : ""}</span>
         </button>
       {/if}
-      <button class="toggle" onclick={toggle} title="Hide shortcut bar" aria-label="Hide shortcut bar">
+      <button class="toggle" onclick={toggle} title="Hide status bar" aria-label="Hide status bar">
         <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <polyline points="6 9 12 15 18 9" />
         </svg>
@@ -84,7 +77,7 @@
     </div>
   </footer>
 {:else}
-  <button class="reveal" onclick={toggle} title="Show shortcut bar" aria-label="Show shortcut bar">
+  <button class="reveal" onclick={toggle} title="Show status bar" aria-label="Show status bar">
     <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <polyline points="18 15 12 9 6 15" />
     </svg>
@@ -105,11 +98,19 @@
     user-select: none;
   }
 
-  .hints {
-    display: flex;
+  .help-btn {
+    display: inline-flex;
     align-items: center;
-    gap: 14px;
-    flex-wrap: wrap;
+    gap: 6px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: var(--fg-muted);
+    transition: background 0.12s, color 0.12s;
+  }
+
+  .help-btn:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
   }
 
   .actions {
@@ -127,16 +128,6 @@
     color: var(--fg);
     border: 1px solid var(--border);
     font-variant-numeric: tabular-nums;
-  }
-
-  .hint {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-  }
-
-  .hint-label {
-    color: var(--fg-muted);
   }
 
   .broadcast-btn {

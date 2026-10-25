@@ -2,5 +2,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    termpane_lib::run()
+    // CLI modes used by Claude Code (hooks and the MCP server); see cli.rs.
+    match std::env::args().nth(1).as_deref() {
+        Some("hook") => termpane_lib::cli::run_hook(),
+        Some("mcp") => termpane_lib::cli::run_mcp(),
+        Some("tool") => termpane_lib::cli::run_tool(),
+        Some("fork") => termpane_lib::cli::run_fork(),
+        _ => termpane_lib::run(),
+    }
 }

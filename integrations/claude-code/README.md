@@ -1,5 +1,13 @@
 # Claude Code notifications in TermPane
 
+> **Superseded.** TermPane 0.4.0+ ships its own Claude Code plugin (in
+> [`plugin/`](plugin/)): open **Preferences → Claude Code integration → Install
+> Claude Code plugin**. It shows Claude's live status on each card, flags
+> permission requests and finished turns, tracks the files each session
+> changes, enables session restore, gives Claude tools to drive TermPane tabs,
+> and makes `/fork` open the copy in a sub-tab. This bell script keeps working,
+> but isn't needed anymore — you can remove its two hook entries.
+
 TermPane lights up a terminal's sidebar card — a pulsing dot, a lingering
 highlight, and (when the window is in the background) a native OS notification —
 whenever a program **rings the terminal bell** (`\x07`). That works out of the

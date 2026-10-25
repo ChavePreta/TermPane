@@ -3,6 +3,9 @@ use crate::preferences::{self, Preferences};
 use crate::pty::{self, PtyHandle};
 use crate::shortcuts;
 use crate::state::{AppState, CloseResult, ExtractResult, LayoutNode, MergeResult, PaneData, Terminal};
+use base64::Engine;
+use parking_lot::Mutex;
+use serde::Serialize;
 use chrono::Utc;
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -19,7 +22,7 @@ fn parse_pane_id(s: &str) -> Result<PaneId, String> {
 
 /// Resolve a process's current working directory via sysinfo.
 /// Used so a new terminal/split inherits the cwd of the shell that spawned it.
-fn cwd_of_pid(pid: u32) -> Option<String> {
+pub(crate) fn cwd_of_pid(pid: u32) -> Option<String> {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let mut sys = System::new();
     let target = Pid::from_u32(pid);
@@ -32,25 +35,50 @@ fn cwd_of_pid(pid: u32) -> Option<String> {
     Some(p.cwd()?.to_string_lossy().into_owned())
 }
 
-fn spawn_pty(
+/// The directory a new tab/split opened "from" this pane should start in.
+/// While Claude Code runs in the pane, that's Claude's own cwd (it may have
+/// moved into a git worktree); otherwise the shell's.
+pub(crate) fn pane_cwd(state: &AppState, pane_id: PaneId) -> Option<String> {
+    let claude_cwd = state
+        .claude_of(pane_id)
+        .filter(|c| c.is_live())
+        .and_then(|c| c.cwd)
+        .filter(|c| std::path::Path::new(c).is_dir());
+    claude_cwd.or_else(|| state.shell_pid_of(pane_id).and_then(cwd_of_pid))
+}
+
+pub(crate) fn spawn_pty(
     app: &AppHandle,
     pane_id: PaneId,
     cwd: Option<&str>,
     shell: Option<&str>,
 ) -> anyhow::Result<Arc<PtyHandle>> {
+    // Lets `termpane hook` / `termpane mcp` running inside this shell find this
+    // instance and know which pane they belong to.
+    let env = [
+        (crate::control::ENV_PANE, pane_id.to_string()),
+        (
+            crate::control::ENV_SOCKET,
+            crate::control::own_socket_path().to_string_lossy().into_owned(),
+        ),
+        (crate::control::ENV_BIN, crate::claude::exe_path()),
+    ];
     let pty::SpawnResult {
         master,
         writer,
         reader,
         child,
         pid,
-    } = pty::spawn_shell(cwd, shell)?;
-    let reader_thread = pty::io::start_reader_thread(app.clone(), pane_id, reader);
+    } = pty::spawn_shell(cwd, shell, &env)?;
+    let backlog = Arc::new(Mutex::new(pty::Backlog::new()));
+    let reader_thread =
+        pty::io::start_reader_thread(app.clone(), pane_id, backlog.clone(), reader);
     Ok(Arc::new(PtyHandle::new(
         master,
         writer,
         child,
         pid,
+        backlog,
         reader_thread,
     )))
 }
@@ -85,13 +113,18 @@ pub fn open_terminal(
     command: Option<String>,
     shell: Option<String>,
     name: Option<String>,
+    parent_id: Option<String>,
+    auto_label: Option<bool>,
 ) -> Result<TerminalSnapshot, String> {
+    let parent = parent_id.as_deref().map(parse_terminal_id).transpose()?;
     open_terminal_impl(
         &app,
         cwd.as_deref(),
         command.as_deref(),
         shell.as_deref(),
         name.as_deref(),
+        parent,
+        auto_label,
     )
     .map_err(|e| e.to_string())
 }
@@ -114,15 +147,32 @@ pub fn open_terminal_impl(
     command: Option<&str>,
     shell: Option<&str>,
     name: Option<&str>,
+    parent: Option<TerminalId>,
+    // Whether the label may later follow the title of a Claude session run in
+    // the tab. On by default — a shortcut's name only says what opened the
+    // tab, and a tab where Claude never runs keeps it anyway; only a rename
+    // by the user (or an explicit `Some(false)`, like a fork's) pins it.
+    auto_label: Option<bool>,
 ) -> anyhow::Result<TerminalSnapshot> {
+    let auto_label = auto_label.unwrap_or(true);
     let state = app.state::<AppState>();
+    // A sub-tab starts where its parent tab is working; anything else where the
+    // active pane is.
+    let origin_pane = match parent {
+        Some(p) => state.active_pane_of(p),
+        None => state.active_pane(),
+    };
+    let inherited_cwd = || origin_pane.and_then(|p| pane_cwd(&state, p));
     let terminal_id = TerminalId::new();
     let pane_id = PaneId::new();
-    let prefix = name
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("Term");
-    let label = state.allocate_label(prefix);
+    // A custom shortcut carries a name — label the card with it verbatim (no
+    // "#<seq>" suffix). A plain "+ New terminal" (no name) gets the sequenced
+    // "Term#N" label. Labels are display-only (never used as keys), so repeated
+    // opens of the same shortcut sharing a label is fine.
+    let label = match name.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(n) => n.to_string(),
+        None => state.allocate_label("Term"),
+    };
     let created_at = Utc::now();
 
     let resolved_cwd = match cwd {
@@ -136,10 +186,10 @@ pub fn open_terminal_impl(
                 Some(expanded)
             } else {
                 tracing::warn!("requested cwd is not a directory, ignoring: {expanded}");
-                state.active_pane_shell_pid().and_then(cwd_of_pid)
+                inherited_cwd()
             }
         }
-        None => state.active_pane_shell_pid().and_then(cwd_of_pid),
+        None => inherited_cwd(),
     };
     let pty = spawn_pty(app, pane_id, resolved_cwd.as_deref(), shell)?;
 
@@ -155,14 +205,7 @@ pub fn open_terminal_impl(
     }
 
     let mut panes = HashMap::new();
-    panes.insert(
-        pane_id,
-        PaneData {
-            pty,
-            foreground_command: None,
-            exit_code: None,
-        },
-    );
+    panes.insert(pane_id, PaneData::new(pty));
     let terminal = Terminal {
         id: terminal_id,
         label,
@@ -170,11 +213,20 @@ pub fn open_terminal_impl(
         panes,
         layout: LayoutNode::Leaf(pane_id),
         active_pane: pane_id,
+        parent_id: parent,
+        marked_unread: false,
+        auto_label,
     };
-    let snapshot = terminal.snapshot();
     state.insert(terminal);
+    let snapshot = state
+        .terminal_snapshot(terminal_id)
+        .ok_or_else(|| anyhow::anyhow!("terminal disappeared after insert"))?;
 
     let _ = app.emit("terminal:added", snapshot.clone());
+    // A sub-tab lands mid-list, not at the end.
+    if parent.is_some() {
+        let _ = app.emit("terminals:reordered", state.terminal_order());
+    }
     Ok(snapshot)
 }
 
@@ -191,20 +243,33 @@ pub fn take_startup_command(
 }
 
 #[tauri::command]
-pub fn close_terminal(
-    app: AppHandle,
-    state: tauri::State<'_, AppState>,
-    terminal_id: String,
-) -> Result<(), String> {
+pub fn close_terminal(app: AppHandle, terminal_id: String) -> Result<(), String> {
     let id = parse_terminal_id(&terminal_id)?;
+    close_terminal_impl(&app, id)
+}
+
+/// Removes a terminal and kills its panes. Its sub-tabs are promoted one level
+/// up, so they get a fresh snapshot.
+pub fn close_terminal_impl(app: &AppHandle, id: TerminalId) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let children = state.children_of(id);
     let term = state
         .remove_terminal(id)
         .ok_or_else(|| format!("terminal {} not found", id))?;
     for (_, p) in term.panes {
         p.pty.kill();
     }
-    let _ = app.emit("terminal:removed", terminal_id);
+    let _ = app.emit("terminal:removed", id.to_string());
+    emit_updated(app, &state, &children);
     Ok(())
+}
+
+fn emit_updated(app: &AppHandle, state: &AppState, ids: &[TerminalId]) {
+    for id in ids {
+        if let Some(s) = state.terminal_snapshot(*id) {
+            let _ = app.emit("terminal:updated", s);
+        }
+    }
 }
 
 #[tauri::command]
@@ -221,7 +286,7 @@ pub fn split_pane(
         _ => return Err(format!("invalid direction: {direction}")),
     };
     let new_pane = PaneId::new();
-    let inherited_cwd = state.shell_pid_of(pid).and_then(cwd_of_pid);
+    let inherited_cwd = pane_cwd(&state, pid);
     let new_pty =
         spawn_pty(&app, new_pane, inherited_cwd.as_deref(), None).map_err(|e| e.to_string())?;
     let terminal_id = state
@@ -257,12 +322,7 @@ pub fn close_pane(
             if let Some(p) = removed_pane {
                 p.pty.kill();
             }
-            if let Some(term) = state.remove_terminal(terminal_id) {
-                for (_, p) in term.panes {
-                    p.pty.kill();
-                }
-                let _ = app.emit("terminal:removed", terminal_id.to_string());
-            }
+            let _ = close_terminal_impl(&app, terminal_id);
             Ok(())
         }
     }
@@ -344,9 +404,12 @@ pub fn rename_terminal(
     if trimmed.is_empty() {
         return Err("empty label".into());
     }
-    if !state.rename_terminal(id, trimmed.to_string()) {
+    if !state.rename_terminal(id, trimmed.to_string(), true) {
         return Err(format!("terminal {} not found", id));
     }
+    // A name the user chose also names the Claude sessions running in the tab
+    // (a longer form, with the project, for the /resume picker).
+    crate::claude::name_sessions_after_tab(&state, id, trimmed);
     let snap = state
         .terminal_snapshot(id)
         .ok_or_else(|| "terminal disappeared after rename".to_string())?;
@@ -365,8 +428,290 @@ pub fn reorder_terminals(
     if !state.reorder(&parsed) {
         return Err("provided ids do not match current terminals".into());
     }
-    let _ = app.emit("terminals:reordered", ids);
+    let _ = app.emit("terminals:reordered", state.terminal_order());
     Ok(())
+}
+
+/// Drag-and-drop in the sidebar: re-parent a terminal (None = top level) and
+/// apply the new display order in one step.
+#[tauri::command]
+pub fn move_terminal(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    terminal_id: String,
+    parent_id: Option<String>,
+    order: Vec<String>,
+) -> Result<(), String> {
+    let id = parse_terminal_id(&terminal_id)?;
+    let parent = parent_id.as_deref().map(parse_terminal_id).transpose()?;
+    let order: Vec<TerminalId> = order
+        .iter()
+        .map(|s| parse_terminal_id(s))
+        .collect::<Result<_, _>>()?;
+    if !state.move_terminal(id, parent, &order) {
+        return Err("invalid move".into());
+    }
+    emit_updated(&app, &state, &[id]);
+    let _ = app.emit("terminals:reordered", state.terminal_order());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_terminal_unread(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    terminal_id: String,
+    unread: bool,
+) -> Result<(), String> {
+    let id = parse_terminal_id(&terminal_id)?;
+    if !state.set_unread(id, unread) {
+        return Err(format!("terminal {} not found", id));
+    }
+    emit_updated(&app, &state, &[id]);
+    Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaneBacklog {
+    data: String,
+    /// Stream offset just past `data`; live chunks starting before it are dupes.
+    end: u64,
+}
+
+/// A pane's recent raw output, replayed by a freshly mounted view (e.g. after
+/// the webview was reloaded) so its scrollback survives.
+#[tauri::command]
+pub fn get_pane_backlog(
+    state: tauri::State<'_, AppState>,
+    pane_id: String,
+) -> Result<PaneBacklog, String> {
+    let pid = parse_pane_id(&pane_id)?;
+    let pty = state.pty_of(pid).ok_or_else(|| format!("pane {} not found", pid))?;
+    let (bytes, end) = pty.backlog.lock().snapshot();
+    Ok(PaneBacklog {
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        end,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionFiles {
+    pane_id: String,
+    session_id: String,
+    live: bool,
+    files: Vec<String>,
+    shared: Vec<String>,
+}
+
+/// Files written by each Claude session in a tab, flagging those another
+/// session in this window also wrote.
+#[tauri::command]
+pub fn get_terminal_files(
+    state: tauri::State<'_, AppState>,
+    terminal_id: String,
+) -> Result<Vec<SessionFiles>, String> {
+    let id = parse_terminal_id(&terminal_id)?;
+    let snap = state.terminal_snapshot(id).ok_or("terminal not found")?;
+    Ok(snap
+        .panes
+        .iter()
+        .filter_map(|p| {
+            let c = p.claude.as_ref()?;
+            let pane = p.id.parse::<PaneId>().ok()?;
+            Some(SessionFiles {
+                pane_id: p.id.clone(),
+                session_id: c.session_id.clone(),
+                live: c.is_live(),
+                files: c.files.clone(),
+                shared: crate::claude::shared_files(&state, pane),
+            })
+        })
+        .collect())
+}
+
+/// `git add` the files this tab's Claude sessions wrote, except files another
+/// session also wrote.
+#[tauri::command]
+pub fn stage_terminal_files(
+    state: tauri::State<'_, AppState>,
+    terminal_id: String,
+) -> Result<crate::claude::StageResult, String> {
+    let id = parse_terminal_id(&terminal_id)?;
+    let snap = state.terminal_snapshot(id).ok_or("terminal not found")?;
+    let mut total = crate::claude::StageResult::default();
+    for p in &snap.panes {
+        let Ok(pane) = p.id.parse::<PaneId>() else { continue };
+        let r = crate::claude::stage_files(&state, pane);
+        total.staged.extend(r.staged);
+        total.shared.extend(r.shared);
+        total.errors.extend(r.errors);
+    }
+    Ok(total)
+}
+
+#[tauri::command]
+pub fn clear_terminal_files(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    terminal_id: String,
+) -> Result<(), String> {
+    let id = parse_terminal_id(&terminal_id)?;
+    let snap = state.terminal_snapshot(id).ok_or("terminal not found")?;
+    for p in &snap.panes {
+        if let Ok(pane) = p.id.parse::<PaneId>() {
+            crate::claude::clear_files(&app, pane);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn read_background_output(
+    state: tauri::State<'_, AppState>,
+    pane_id: String,
+    task_id: String,
+) -> Result<crate::claude::BackgroundOutput, String> {
+    let pane = parse_pane_id(&pane_id)?;
+    crate::claude::read_background(&state, pane, &task_id)
+}
+
+#[tauri::command]
+pub async fn file_diff(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || crate::claude::file_diff(&path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// A clickable path in a pane's output: relative paths resolve against the
+/// pane's working directory (Claude's while it runs there).
+#[tauri::command]
+pub async fn open_path(
+    app: AppHandle,
+    pane_id: String,
+    path: String,
+    line: Option<u32>,
+    col: Option<u32>,
+) -> Result<(), String> {
+    let pane = parse_pane_id(&pane_id)?;
+    let cwd = pane_cwd(&app.state::<AppState>(), pane);
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::claude::open_in_editor(&path, line, col, cwd.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Opens a sub-tab with a shell inside the dev container of the pane's
+/// project (devcontainer.json `dockerComposeFile` + `service`), at its
+/// workspace folder, starting the service only if it isn't running.
+#[tauri::command]
+pub fn open_devcontainer_shell(app: AppHandle, pane_id: String) -> Result<TerminalSnapshot, String> {
+    let pane = parse_pane_id(&pane_id)?;
+    let state = app.state::<AppState>();
+    let cwd = pane_cwd(&state, pane).ok_or("can't tell this pane's folder")?;
+    let toplevel = crate::context::git_info(&cwd).map(|g| g.toplevel);
+    let dc = crate::devcontainer::find(std::path::Path::new(&cwd), toplevel.as_deref().map(std::path::Path::new))
+        .ok_or("no devcontainer.json for this project")?;
+    let command = crate::devcontainer::shell_command(&dc)
+        .ok_or("only Docker Compose dev containers (dockerComposeFile + service) are supported")?;
+    let parent = state.terminal_of_pane(pane);
+    open_terminal_impl(
+        &app,
+        Some(&dc.root.to_string_lossy()),
+        Some(&command),
+        None,
+        Some(&format!("{} · container", dc.name)),
+        parent,
+        Some(false),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Opens a server link from a tab card. Only a url TermPane itself derived for
+/// that tab (its ports list) is opened — the page can't use this to open an
+/// arbitrary address, which keeps the opener's per-URL scoping meaningful
+/// while still allowing hosts a project names in its devcontainer.json.
+#[tauri::command]
+pub fn open_port_url(
+    state: tauri::State<'_, AppState>,
+    terminal_id: String,
+    url: String,
+) -> Result<(), String> {
+    let id = parse_terminal_id(&terminal_id)?;
+    let snap = state.terminal_snapshot(id).ok_or("terminal not found")?;
+    let known = snap
+        .panes
+        .iter()
+        .flat_map(|p| p.ports.iter())
+        .any(|p| p.url.as_deref() == Some(url.as_str()));
+    if !known {
+        return Err("not one of this tab's server links".into());
+    }
+    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    std::process::Command::new(opener)
+        .arg(&url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("{opener}: {e}"))
+}
+
+/// Dock / taskbar badge: how many tabs need the user. 0 clears it.
+#[tauri::command]
+pub fn set_badge_count(app: AppHandle, count: u32) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "window 'main' not found".to_string())?;
+    window
+        .set_badge_count((count > 0).then_some(count as i64))
+        .map_err(|e| e.to_string())
+}
+
+/// The pane menu's "Fork Claude session": same as `/fork` inside TermPane.
+#[tauri::command]
+pub fn fork_claude_session(app: AppHandle, pane_id: String) -> Result<String, String> {
+    let pane = parse_pane_id(&pane_id)?;
+    crate::control::fork_session(&app, pane, &serde_json::json!({})).map(|(_, label)| label)
+}
+
+#[tauri::command]
+pub async fn list_claude_sessions() -> Vec<crate::claude::ClaudeSession> {
+    tauri::async_runtime::spawn_blocking(crate::claude::list_sessions)
+        .await
+        .unwrap_or_default()
+}
+
+/// Working directory of the active pane (Claude's, when it runs there).
+#[tauri::command]
+pub fn active_cwd(state: tauri::State<'_, AppState>) -> Option<String> {
+    state.active_pane().and_then(|p| pane_cwd(&state, p))
+}
+
+#[tauri::command]
+pub async fn claude_integration_status() -> Result<crate::claude::IntegrationStatus, String> {
+    tauri::async_runtime::spawn_blocking(crate::claude::integration_status)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn install_claude_plugin() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(crate::claude::install_plugin)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Reloads the webview. Lossless: every view replays its pane's backlog.
+#[tauri::command]
+pub fn redraw_terminals(app: AppHandle) {
+    redraw_all(&app);
+}
+
+pub fn redraw_all(app: &AppHandle) {
+    for w in app.webview_windows().into_values() {
+        let _ = w.eval("window.location.reload()");
+    }
 }
 
 #[tauri::command]
@@ -439,6 +784,14 @@ pub fn write_input_broadcast(
 #[tauri::command]
 pub fn get_platform() -> String {
     std::env::consts::OS.to_string()
+}
+
+/// The frontend painted a frame after a system wake (called from inside a
+/// `requestAnimationFrame`), proving the WebContent process is alive — cancel
+/// the pending native reload for this wake generation. See `wake.rs`.
+#[tauri::command]
+pub fn ack_woke(state: tauri::State<'_, Arc<crate::wake::WakeWatch>>, generation: u64) {
+    state.ack(generation);
 }
 
 #[tauri::command]
@@ -520,10 +873,19 @@ pub fn set_shortcuts(
     Ok(sanitized)
 }
 
-/// Called once from the Tauri Builder `setup` hook.
-/// Creates the first terminal (Term#1) and starts the foreground monitor.
+/// Called once from the Tauri Builder `setup` hook. Starts the control socket,
+/// restores tabs left by instances that are gone (or opens Term#1), then starts
+/// the session saver and the foreground monitor.
 pub fn bootstrap(app: AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    open_terminal_impl(&app, None, None, None, None)?;
+    crate::control::start(app.clone());
+    crate::claude::refresh_installed_plugin();
+    let restore = preferences::load().restore_sessions;
+    let saved = crate::restore::claim_orphans(restore);
+    if crate::restore::restore(&app, saved) == 0 {
+        open_terminal_impl(&app, None, None, None, None, None, None)?;
+    }
+    crate::restore::start_saver(app.clone());
     crate::monitor::start(app);
     Ok(())
 }
+

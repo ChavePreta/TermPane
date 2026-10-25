@@ -1,0 +1,12 @@
+{
+  "name": "termpane",
+  "owner": { "name": "TermPane" },
+  "description": "TermPane's own plugin, installed by TermPane from Preferences.",
+  "plugins": [
+    {
+      "name": "termpane",
+      "source": "./termpane",
+      "description": "Connects Claude Code to the TermPane terminal manager: live status on tab cards, files changed per session, tab control tools, and /fork into a TermPane sub-tab."
+    }
+  ]
+}

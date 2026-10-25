@@ -3,6 +3,11 @@ use tauri::{AppHandle, Runtime};
 
 /// Menu id for "New Window" — matched in `lib.rs`'s `on_menu_event`.
 pub const NEW_WINDOW_ID: &str = "new_window";
+/// Menu id for "Redraw Terminals" — reloads the webview (lossless thanks to
+/// the per-pane backlog replay). Escape hatch for a blank/black window.
+pub const REDRAW_ID: &str = "redraw_terminals";
+/// Menu id for "Keyboard Shortcuts" — the frontend opens its shortcuts dialog.
+pub const SHORTCUTS_ID: &str = "keyboard_shortcuts";
 
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let pkg = app.package_info();
@@ -76,12 +81,26 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     )?;
 
     #[cfg(target_os = "macos")]
+    let redraw_accel = Some("Cmd+Shift+R");
+    #[cfg(not(target_os = "macos"))]
+    let redraw_accel = Some("Ctrl+Shift+Alt+R");
+    let redraw = MenuItem::with_id(app, REDRAW_ID, "Redraw Terminals", true, redraw_accel)?;
+
+    #[cfg(target_os = "macos")]
+    let shortcuts_accel = Some("Cmd+Shift+Slash");
+    #[cfg(not(target_os = "macos"))]
+    let shortcuts_accel = Some("Ctrl+Shift+Alt+Slash");
+    let shortcuts_item =
+        MenuItem::with_id(app, SHORTCUTS_ID, "Keyboard Shortcuts", true, shortcuts_accel)?;
+    let help_submenu = Submenu::with_items(app, "Help", true, &[&shortcuts_item])?;
+
+    #[cfg(target_os = "macos")]
     {
         let view_submenu = Submenu::with_items(
             app,
             "View",
             true,
-            &[&PredefinedMenuItem::fullscreen(app, None)?],
+            &[&redraw, &PredefinedMenuItem::fullscreen(app, None)?],
         )?;
         return Menu::with_items(
             app,
@@ -91,15 +110,26 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
                 &edit_submenu,
                 &view_submenu,
                 &window_submenu,
+                &help_submenu,
             ],
         );
     }
 
     #[cfg(not(target_os = "macos"))]
-    Menu::with_items(
-        app,
-        &[&app_submenu, &file_submenu, &edit_submenu, &window_submenu],
-    )
+    {
+        let view_submenu = Submenu::with_items(app, "View", true, &[&redraw])?;
+        Menu::with_items(
+            app,
+            &[
+                &app_submenu,
+                &file_submenu,
+                &edit_submenu,
+                &view_submenu,
+                &window_submenu,
+                &help_submenu,
+            ],
+        )
+    }
 }
 
 /// Launch a second, independent TermPane process. On a bundled macOS app we go

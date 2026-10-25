@@ -2,18 +2,123 @@
   import { tick } from "svelte";
   import type { TerminalSnapshot } from "../api";
   import { api } from "../api";
-  import { aggregateForeground, aggregateMemory, formatBytes } from "../store";
+  import {
+    aggregateForeground,
+    aggregateMemory,
+    formatBytes,
+    terminalClaude,
+    terminalFileCount,
+    terminalGit,
+    terminalPorts,
+  } from "../store";
   import { attentionTerminals } from "../attention";
+  import CardInfo from "./CardInfo.svelte";
 
   type Props = {
     terminal: TerminalSnapshot;
     active: boolean;
     dragging: boolean;
+    depth: number;
+    hasChildren: boolean;
+    collapsed: boolean;
+    onToggleCollapse: () => void;
     onSelect: () => void;
     onRequestClose: () => void;
+    onContextMenu: (e: MouseEvent) => void;
+    onOpenFiles: () => void;
   };
 
-  let { terminal, active, dragging, onSelect, onRequestClose }: Props = $props();
+  let {
+    terminal,
+    active,
+    dragging,
+    depth,
+    hasChildren,
+    collapsed,
+    onToggleCollapse,
+    onSelect,
+    onRequestClose,
+    onContextMenu,
+    onOpenFiles,
+  }: Props = $props();
+
+  const STATUS_TEXT: Record<string, string> = {
+    idle: "Claude ready",
+    thinking: "thinking…",
+    tool: "working…",
+    permission: "needs permission",
+    waiting: "waiting for you",
+    done: "done",
+  };
+
+  let claude = $derived(terminalClaude(terminal));
+  let claudeLive = $derived(claude !== null && claude.status !== "ended");
+  let claudeBusy = $derived(claude?.status === "thinking" || claude?.status === "tool");
+  let claudeText = $derived(
+    claude && claudeLive
+      ? claude.status === "tool" || claude.status === "permission"
+        ? (claude.detail ?? STATUS_TEXT[claude.status])
+        : STATUS_TEXT[claude.status]
+      : null,
+  );
+  let fileCount = $derived(terminalFileCount(terminal));
+  let git = $derived(terminalGit(terminal));
+  let ports = $derived(terminalPorts(terminal));
+  let gitText = $derived(
+    git ? (git.worktree ? `worktree: ${git.worktree}` : git.branch) : null,
+  );
+
+  // --- The info balloon: after 2 s of hover, or at once from the ⓘ button.
+  // It stays while the pointer is over the card or the balloon itself.
+  let cardEl: HTMLDivElement | null = $state(null);
+  let infoAnchor = $state<DOMRect | null>(null);
+  let hoverTimer: ReturnType<typeof setTimeout> | null = null;
+  let hideTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function showInfo() {
+    if (!cardEl || editing || dragging) return;
+    infoAnchor = cardEl.getBoundingClientRect();
+  }
+
+  function hideInfo() {
+    if (hoverTimer) clearTimeout(hoverTimer);
+    if (hideTimer) clearTimeout(hideTimer);
+    hoverTimer = hideTimer = null;
+    infoAnchor = null;
+  }
+
+  function cancelHide() {
+    if (hideTimer) clearTimeout(hideTimer);
+    hideTimer = null;
+  }
+
+  function scheduleHide() {
+    cancelHide();
+    hideTimer = setTimeout(hideInfo, 250);
+  }
+
+  function handleEnter() {
+    hovering = true;
+    cancelHide();
+    if (!infoAnchor && !hoverTimer) hoverTimer = setTimeout(showInfo, 2000);
+  }
+
+  function handleLeave() {
+    hovering = false;
+    if (hoverTimer) clearTimeout(hoverTimer);
+    hoverTimer = null;
+    if (infoAnchor) scheduleHide();
+  }
+
+  function toggleInfo(e: MouseEvent) {
+    e.stopPropagation();
+    if (infoAnchor) hideInfo();
+    else showInfo();
+  }
+
+  $effect(() => {
+    if (dragging || editing) hideInfo();
+  });
 
   let hovering = $state(false);
   let editing = $state(false);
@@ -21,16 +126,12 @@
   let editValue = $state("");
 
   let foreground = $derived(aggregateForeground(terminal));
+  let subtitle = $derived(claudeText ?? foreground);
   let memoryLabel = $derived(formatBytes(aggregateMemory(terminal)));
   let attentionEntry = $derived($attentionTerminals.get(terminal.id));
   let pulseKey = $derived(attentionEntry?.nonce);
   let showDot = $derived(attentionEntry !== undefined);
   let persistent = $derived(!!attentionEntry?.persistent && !active);
-
-  function formatTime(iso: string): string {
-    const d = new Date(iso);
-    return d.toLocaleTimeString(undefined, { hour12: false });
-  }
 
   async function startEdit() {
     if (editing) return;
@@ -87,25 +188,68 @@
 
   function handleClick() {
     if (editing) return;
+    hideInfo();
     onSelect();
+  }
+
+  function handleToggle(e: MouseEvent) {
+    e.stopPropagation();
+    onToggleCollapse();
+  }
+
+  function handleFiles(e: MouseEvent) {
+    e.stopPropagation();
+    onOpenFiles();
   }
 </script>
 
 <div
+  bind:this={cardEl}
   class="card"
   class:active
   class:dragging
   class:editing
   class:attention={persistent}
+  class:unread={terminal.markedUnread}
   data-card-id={terminal.id}
+  style="padding-left: {10 + depth * 16}px"
   role="button"
   tabindex="0"
-  onmouseenter={() => (hovering = true)}
-  onmouseleave={() => (hovering = false)}
+  onmouseenter={handleEnter}
+  onmouseleave={handleLeave}
   onclick={handleClick}
   ondblclick={startEdit}
   onkeydown={handleKey}
+  oncontextmenu={(e) => {
+    e.preventDefault();
+    onContextMenu(e);
+  }}
 >
+  {#if hasChildren}
+    <button
+      class="card-toggle"
+      class:collapsed
+      title={collapsed ? "Show sub-tabs" : "Hide sub-tabs"}
+      aria-label={collapsed ? "Show sub-tabs" : "Hide sub-tabs"}
+      onclick={handleToggle}
+    >
+      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <polyline points="6 9 12 15 18 9" />
+      </svg>
+    </button>
+  {/if}
+  {#if claudeBusy}
+    <span class="claude-spinner" title="Claude is working" aria-hidden="true"></span>
+  {:else if claudeLive && claude}
+    <span
+      class="claude-state {claude.status}"
+      title={claudeText ?? ""}
+      aria-hidden="true"
+    ></span>
+  {/if}
+  {#if terminal.markedUnread}
+    <span class="unread-mark" title="Marked as unread" aria-label="Marked as unread"></span>
+  {/if}
   {#if showDot}
     {#key pulseKey}
       <span
@@ -126,30 +270,76 @@
       onclick={(e) => e.stopPropagation()}
     />
   {:else}
-    <span class="card-text" title={terminal.label + (foreground ? " — " + foreground : "")}>
-      <span class="card-name">{terminal.label}</span>
-      {#if foreground}
-        <span class="card-cmd"> — {foreground}</span>
+    <span class="card-body">
+      <span class="card-text">
+        <span class="card-name">{terminal.label}</span>
+        {#if subtitle}
+          <span
+            class="card-cmd"
+            class:claude-text={claudeText !== null}
+            class:needs-you={claude?.status === "permission" || claude?.status === "waiting"}
+          > — {subtitle}</span>
+        {/if}
+      </span>
+      {#if gitText}
+        <span class="card-sub"><span class="card-git">{gitText}</span></span>
       {/if}
     </span>
-    {#if memoryLabel && !hovering}
+    {#if fileCount > 0}
+      <button
+        class="card-files"
+        title="Files changed by Claude in this tab"
+        aria-label={`${fileCount} files changed by Claude`}
+        onclick={handleFiles}
+      >
+        <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 20h9" />
+          <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+        </svg>
+        {fileCount}
+      </button>
+    {/if}
+    {#if memoryLabel}
       <span class="card-mem" title="Memory (shell + descendants)">{memoryLabel}</span>
     {/if}
-  {/if}
-  {#if hovering && !editing}
-    <span class="card-meta">
-      <span class="card-time">{formatTime(terminal.createdAt)}</span>
-      <button
-        class="card-close"
-        title="Close terminal"
-        aria-label="Close terminal"
-        onclick={handleClose}
+    <button
+        class="card-info"
+        class:open={infoAnchor !== null}
+        title="About this tab"
+        aria-label="About this tab"
+        onclick={toggleInfo}
       >
-        ×
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="10" />
+          <line x1="12" y1="16" x2="12" y2="12" />
+          <line x1="12" y1="8" x2="12.01" y2="8" />
+        </svg>
       </button>
-    </span>
+    <!-- Always takes its place; only shows on hover, so nothing moves. -->
+    <button
+      class="card-close"
+      class:shown={hovering}
+      title="Close terminal"
+      aria-label="Close terminal"
+      tabindex={hovering ? 0 : -1}
+      onclick={handleClose}
+    >
+      ×
+    </button>
   {/if}
 </div>
+{#if infoAnchor}
+  <CardInfo
+    {terminal}
+    anchor={infoAnchor}
+    onOpenFiles={() => {
+      hideInfo();
+      onOpenFiles();
+    }}
+    onPointerEnter={cancelHide}
+    onPointerLeave={scheduleHide}
+  />
+{/if}
 
 <style>
   .card {
@@ -226,8 +416,143 @@
     }
   }
 
-  .card-text {
+  .card.unread .card-name {
+    font-weight: 700;
+  }
+
+  .card-toggle {
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+    margin-left: -5px;
+    margin-right: -3px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--fg);
+    border-radius: 4px;
+    transition: transform 0.12s, background 0.12s;
+  }
+
+  .card-toggle:hover {
+    background: var(--bg-hover);
+  }
+
+  .card-toggle.collapsed {
+    transform: rotate(-90deg);
+  }
+
+  .card-toggle:hover {
+    color: var(--fg);
+  }
+
+  .claude-spinner {
+    flex-shrink: 0;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+    border-top-color: var(--accent);
+    animation: claude-spin 0.8s linear infinite;
+  }
+
+  @keyframes claude-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .claude-spinner {
+      animation-duration: 2.4s;
+    }
+  }
+
+  .claude-state {
+    flex-shrink: 0;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--fg-faint);
+  }
+
+  .claude-state.permission {
+    background: #e5a50a;
+    box-shadow: 0 0 0 2px color-mix(in srgb, #e5a50a 35%, transparent);
+  }
+
+  .claude-state.waiting {
+    background: var(--accent);
+  }
+
+  .claude-state.done {
+    background: #2ea043;
+  }
+
+  .unread-mark {
+    flex-shrink: 0;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    border: 2px solid var(--accent);
+    box-sizing: border-box;
+  }
+
+  .card-cmd.claude-text {
+    font-style: normal;
+  }
+
+  .card-cmd.needs-you {
+    color: #c98a00;
+    font-weight: 500;
+  }
+
+  .card-files {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 11px;
+    color: var(--fg-muted);
+    font-variant-numeric: tabular-nums;
+    border: 1px solid var(--border);
+    transition: background 0.12s, color 0.12s;
+  }
+
+  .card-files:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+
+  .card-body {
     flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .card-sub {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    font-size: 11px;
+    color: var(--fg-muted);
+  }
+
+  .card-git {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: Menlo, Monaco, monospace;
+    font-size: 10.5px;
+  }
+
+  .card-text {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -265,17 +590,38 @@
     padding-left: 6px;
   }
 
-  .card-meta {
-    display: flex;
-    align-items: center;
-    gap: 6px;
+  .card-info {
     flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    color: var(--fg-muted);
+    transition: background 0.12s, color 0.12s, opacity 0.12s;
   }
 
-  .card-time {
-    font-size: 11px;
-    color: var(--fg-muted);
-    font-variant-numeric: tabular-nums;
+  .card-info {
+    width: 18px;
+    height: 18px;
+    opacity: 0.45;
+  }
+
+  .card:hover .card-info,
+  .card-info.open {
+    opacity: 1;
+  }
+
+  .card-info:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+
+  .card-close {
+    visibility: hidden;
+  }
+
+  .card-close.shown {
+    visibility: visible;
   }
 
   .card-close {
