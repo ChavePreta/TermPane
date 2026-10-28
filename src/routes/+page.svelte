@@ -19,6 +19,7 @@
     needsYou,
   } from "$lib/store";
   import { clearAttention, signalNotification, attentionTerminals } from "$lib/attention";
+  import { clearProgress } from "$lib/progress";
   import type { ClaudeStatus } from "$lib/api";
   import {
     loadPreferences,
@@ -225,9 +226,11 @@
         terminals.upsert(t);
         if (t.panes.length < 2) disableBroadcast(t.id);
       }),
-      await onPaneForeground(({ terminalId, paneId, command }) =>
-        terminals.setPaneForeground(terminalId, paneId, command),
-      ),
+      await onPaneForeground(({ terminalId, paneId, command }) => {
+        terminals.setPaneForeground(terminalId, paneId, command);
+        // Back at the prompt: a bar the program never cleared goes too.
+        if (command === null) clearProgress(paneId);
+      }),
       await onPaneStats((stats) => terminals.setPaneStats(stats)),
       await onTerminalsReordered((ids) => terminals.reorder(ids)),
       await onAppCloseRequested((running) => {

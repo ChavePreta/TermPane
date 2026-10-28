@@ -139,6 +139,7 @@ fn tick(
 
     if let Some((git, dev, docker)) = slow {
         refresh_context(app, &state, sys, &children_of, git, dev, &docker);
+        crate::claude::refresh_remote(app, |pid| sys.process(Pid::from_u32(pid)).is_some());
     }
     Ok(())
 }

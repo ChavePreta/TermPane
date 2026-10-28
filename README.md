@@ -32,6 +32,7 @@ with the currently running command shown right next to its label.
 - **Live foreground-command tracking** — the running process appears in italic, muted color, next to the terminal label (`Term#1 — npm`).
 - **Multi-pane aggregation:** all running commands joined by `/`, truncated with `…` when too long.
 - **Hover reveals** open timestamp and a close button.
+- **Progress bars on cards** — a program or script that reports progress with `OSC 9;4` (the sequence Windows Terminal, Ghostty and WezTerm show; `cargo`, `winget` and others already send it) gets a bar along the bottom of its card, plus the percentage next to the command. See [Report progress from a script](#report-progress-from-a-script).
 - **Attention indicator** — when a program rings the bell (or sends an `OSC 9` / `OSC 777` notification), its card pulses; if it wasn't the card you were viewing, it keeps a dot + highlight until you switch to it. When TermPane isn't focused, it also fires a native OS notification (on by default; toggle in Preferences). See [Get notified when a terminal needs you](#get-notified-when-a-terminal-needs-you).
 - **Confirmation dialog** before destroying a terminal, with a heads-up if a process is still running.
 
@@ -40,6 +41,23 @@ with the currently running command shown right next to its label.
 - **OS notifications when you're away.** If TermPane isn't the focused window, the same event raises a native macOS notification (throttled to one per terminal until you visit it). On by default; turn it off in **Preferences → "Notify when a background terminal needs attention."**
 - **`OSC 9` / `OSC 777` support.** Tools that request notifications via these standard escape sequences (iTerm2/Ghostty/VS Code style) light up the card too, and their message text rides along to the OS notification.
 - **Claude Code.** Install the plugin in **Preferences → Claude Code integration** and Claude's permission requests, questions and finished turns light up the card. (The older bell-script setup in [`integrations/claude-code/`](integrations/claude-code/README.md) still works, but isn't needed anymore.)
+
+### Report progress from a script
+Print `ESC ] 9 ; 4 ; <state> ; <percent> ESC \` and the card shows it:
+
+```bash
+progress() { printf '\e]9;4;%s;%s\e\\' "$1" "${2:-}"; }
+
+for i in $(seq 1 100); do
+  progress 1 "$i"
+  sleep 0.05
+done
+progress 0
+```
+
+`progress 1 <percent>` sets the bar (0–100); `progress 0` removes it.
+
+States: `0` remove, `1` normal, `2` error (red), `3` indeterminate (no percent), `4` paused (amber). The bar also goes away by itself when the shell is back at its prompt, so a script that dies halfway leaves nothing behind. It works over `ssh` and inside containers too: it is just output.
 
 ### Built for Claude Code
 - **Live status on every card** — a spinner while Claude works, the tool it's running, and a clear marker when it needs your permission or is done (with a notification when TermPane is in the background).
@@ -52,7 +70,8 @@ with the currently running command shown right next to its label.
 - **One plugin, one click** — Preferences → *Claude Code integration* → **Install Claude Code plugin** sets all of this up; outside TermPane the plugin does nothing.
 - **Tabs come back after a crash or restart**, with running Claude sessions resumed.
 - **Mark as unread** (`⌘⇧U`) and **jump to the next tab that needs you** (`⌘J`); a **Dock badge** counts the tabs waiting for you.
-- **Tabs named after their session**, with **branch / worktree** and **open ports** (click to open in the browser) under the name. Renaming a tab names its Claude session too.
+- **Tabs named after their session**, with **branch / worktree** and **open ports** (click to open in the browser) under the name. Renaming a tab renames its running Claude session, and `/rename` in Claude renames the tab.
+- **Remote Control switch** on every card running Claude: the phone icon lights up while the session is reachable from your phone or claude.ai/code, and a click runs `/remote-control` to connect or disconnect.
 - **Watch background work** — a spy button opens a live, read-only view of commands and agents Claude runs in the background; published **artifacts** are listed with links.
 - **Copy buttons on Claude's code blocks** — copies the code exactly as written, not as the screen wrapped it; a `{ }` list keeps every block of the session.
 - **Diffs per session**, **⌘F** search in the scrollback, **⌘-click file paths** to open them in your editor, and a **list of your prompts** (`⌘⇧L`).

@@ -115,6 +115,9 @@ pub struct ClaudeInfo {
     /// Fenced code blocks from Claude's messages, as written (newest last).
     #[serde(default)]
     pub code_blocks: Vec<CodeBlock>,
+    /// Remote Control (`/remote-control`) is on for the session.
+    #[serde(default)]
+    pub remote: bool,
     pub updated_at: DateTime<Utc>,
 }
 

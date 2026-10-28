@@ -57,6 +57,19 @@ pub fn apply_hook(app: &AppHandle, pane_id: PaneId, payload: &Value) {
     if event == "Notification" && !permission_dialog_likely(payload, &session_id) {
         return;
     }
+    // Sent by TermPane's own plugin after the user ran /rename.
+    if event == "TermPaneRename" {
+        let title = payload["title"]
+            .as_str()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .or_else(|| session_title(&session_id));
+        if let Some(title) = title {
+            rename_tab_after_session(app, pane_id, &title);
+        }
+        return;
+    }
     let state = app.state::<AppState>();
     let change = state.update_claude(pane_id, |slot| {
         let same_session = slot.as_ref().is_some_and(|c| c.session_id == session_id);
@@ -73,6 +86,7 @@ pub fn apply_hook(app: &AppHandle, pane_id: PaneId, payload: &Value) {
                 background: Vec::new(),
                 artifacts: Vec::new(),
                 code_blocks: Vec::new(),
+                remote: false,
                 updated_at: Utc::now(),
             });
         }
@@ -171,7 +185,9 @@ pub fn apply_hook(app: &AppHandle, pane_id: PaneId, payload: &Value) {
     if matches!(event.as_str(), "Stop" | "SessionStart") {
         let app = app.clone();
         std::thread::spawn(move || {
-            follow_session_title(&app, pane_id, &session_id);
+            if !(event == "SessionStart" && adopt_session_name(&app, pane_id, &session_id)) {
+                follow_session_title(&app, pane_id, &session_id);
+            }
             collect_code_blocks(&app, pane_id, &session_id);
             // The turn's last message can reach the transcript just after Stop.
             std::thread::sleep(std::time::Duration::from_millis(1500));
@@ -297,17 +313,14 @@ pub fn transcript_path(session_id: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// The session's current title: its custom title (`/rename`, `-n`, or one
-/// TermPane wrote), else the one Claude generated.
-fn session_title(session_id: &str) -> Option<String> {
-    let path = transcript_path(session_id)?;
-    let mut file = std::fs::File::open(path).ok()?;
-    let len = file.metadata().ok()?.len();
-    file.seek(SeekFrom::Start(len.saturating_sub(TAIL_BYTES))).ok()?;
-    let mut tail = Vec::new();
-    file.take(TAIL_BYTES).read_to_end(&mut tail).ok()?;
+/// The last custom title (`/rename`, `-n`, or one TermPane wrote) and the
+/// last generated title among a transcript's lines.
+fn titles_in(bytes: &[u8]) -> (Option<String>, Option<String>) {
     let (mut custom, mut ai) = (None, None);
-    for line in tail.split(|b| *b == b'\n') {
+    for line in bytes.split(|b| *b == b'\n') {
+        if !line.windows(7).any(|w| w == b"-title\"") {
+            continue;
+        }
         let Ok(v) = serde_json::from_slice::<Value>(line) else { continue };
         match v["type"].as_str() {
             Some("custom-title") => custom = v["customTitle"].as_str().map(str::to_string),
@@ -315,7 +328,51 @@ fn session_title(session_id: &str) -> Option<String> {
             _ => {}
         }
     }
-    custom.or(ai).filter(|t| !t.trim().is_empty())
+    let keep = |t: Option<String>| t.filter(|t| !t.trim().is_empty());
+    (keep(custom), keep(ai))
+}
+
+fn transcript_tail(session_id: &str) -> Option<Vec<u8>> {
+    let path = transcript_path(session_id)?;
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(len.saturating_sub(TAIL_BYTES))).ok()?;
+    let mut tail = Vec::new();
+    file.take(TAIL_BYTES).read_to_end(&mut tail).ok()?;
+    Some(tail)
+}
+
+/// The session's current title: its custom title, else the one Claude
+/// generated.
+fn session_title(session_id: &str) -> Option<String> {
+    let (custom, ai) = titles_in(&transcript_tail(session_id)?);
+    custom.or(ai)
+}
+
+/// The name the user gave the session, if any. Claude writes `custom-title`
+/// only for those (its own names are `ai-title` or not written at all). Read
+/// from the tail, else the whole transcript: a resumed session may not have
+/// re-written it yet.
+fn session_custom_title(session_id: &str) -> Option<String> {
+    if let (Some(t), _) = titles_in(&transcript_tail(session_id)?) {
+        return Some(t);
+    }
+    titles_in(&std::fs::read(transcript_path(session_id)?).ok()?).0
+}
+
+/// A session name TermPane derived from a tab label ("Label — repo/branch",
+/// "Label — repo (worktree x)") back to the label; other names unchanged.
+fn label_of_session_name(name: &str) -> &str {
+    let Some((label, place)) = name.rsplit_once(" — ") else { return name };
+    let ours = !place.contains(' ') && place.contains('/')
+        || place.split_once(" (worktree ").is_some_and(|(repo, rest)| {
+            !repo.contains(' ') && rest.ends_with(')')
+        });
+    if ours && !label.trim().is_empty() {
+        label
+    } else {
+        name
+    }
 }
 
 /// Short form of a session title for a tab label: whole words up to ~28
@@ -363,11 +420,42 @@ fn follow_session_title(app: &AppHandle, pane_id: PaneId, session_id: &str) {
     }
 }
 
+/// A session the user named takes its tab when it starts there (`claude
+/// --resume`, `/resume`), pinned like a rename: the tab follows the session
+/// the user chose, whatever the tab was called before.
+fn adopt_session_name(app: &AppHandle, pane_id: PaneId, session_id: &str) -> bool {
+    let Some(name) = session_custom_title(session_id) else { return false };
+    let state = app.state::<AppState>();
+    let Some(terminal_id) = state.terminal_of_pane(pane_id) else { return false };
+    let label = short_label(label_of_session_name(&name));
+    let current = state.terminal_snapshot(terminal_id).map(|s| s.label);
+    if current.as_deref() != Some(label.as_str()) && state.rename_terminal(terminal_id, label, true) {
+        if let Some(s) = state.terminal_snapshot(terminal_id) {
+            let _ = app.emit("terminal:updated", s);
+        }
+    }
+    true
+}
+
+/// A /rename the user ran in Claude names the tab too, pinned like a rename
+/// in the sidebar: it overrides a name the user gave the tab before.
+fn rename_tab_after_session(app: &AppHandle, pane_id: PaneId, title: &str) {
+    let state = app.state::<AppState>();
+    let Some(terminal_id) = state.terminal_of_pane(pane_id) else { return };
+    if state.rename_terminal(terminal_id, short_label(label_of_session_name(title)), true) {
+        if let Some(s) = state.terminal_snapshot(terminal_id) {
+            let _ = app.emit("terminal:updated", s);
+        }
+    }
+}
+
 /// Gives every live Claude session in the tab a name derived from the tab's
 /// label: the label plus where it runs ("Login bug — zumpost-dag/feat-x"), so
-/// the /resume picker tells sessions of different projects apart. Written as
-/// the `custom-title` entry `/rename` itself appends to the transcript; a
-/// running session shows the new name in its prompt box from its next start.
+/// the /resume picker tells sessions of different projects apart. A session
+/// whose TermPane plugin is watching runs `/rename` itself (Claude keeps the
+/// name in memory and rewrites it to the transcript, so an entry written from
+/// outside would be overwritten); for the others, the `custom-title` entry
+/// `/rename` appends is written to the transcript directly.
 pub fn name_sessions_after_tab(state: &AppState, terminal_id: TerminalId, label: &str) {
     let Some(snap) = state.terminal_snapshot(terminal_id) else { return };
     for pane in &snap.panes {
@@ -377,6 +465,10 @@ pub fn name_sessions_after_tab(state: &AppState, terminal_id: TerminalId, label:
             Some(GitInfo { repo, branch, .. }) => format!("{label} — {repo}/{branch}"),
             None => label.to_string(),
         };
+        let pane_id = pane.id.parse::<PaneId>().ok();
+        if pane_id.is_some_and(|p| crate::control::notify_watcher(p, &serde_json::json!({ "rename": long }))) {
+            continue;
+        }
         if let Some(path) = transcript_path(&c.session_id) {
             let entry = serde_json::json!({
                 "type": "custom-title",
@@ -444,9 +536,81 @@ pub fn mark_ended(app: &AppHandle, pane_id: PaneId) {
                 info.status = ClaudeStatus::Ended;
                 info.detail = None;
             }
+            info.remote = false;
         }
     });
     emit_change(app, change, pane_id);
+}
+
+/// Session ids with Remote Control on, from Claude's own per-process records
+/// (`~/.claude/sessions/<pid>.json` carries a `bridgeSessionId` while it is).
+/// `alive` filters out the records a dead process left behind.
+fn remote_sessions(alive: impl Fn(u32) -> bool) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let Some(dir) = dirs::home_dir().map(|h| h.join(".claude").join("sessions")) else {
+        return out;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "json") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        let bridged = v["bridgeSessionId"].as_str().is_some_and(|s| !s.is_empty());
+        let pid = v["pid"].as_u64().and_then(|p| u32::try_from(p).ok());
+        if let (true, Some(pid), Some(id)) = (bridged, pid, v["sessionId"].as_str()) {
+            if alive(pid) {
+                out.insert(id.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Refreshes `remote` on every live Claude record; called by the monitor's
+/// slow tick.
+pub fn refresh_remote(app: &AppHandle, alive: impl Fn(u32) -> bool) {
+    let state = app.state::<AppState>();
+    let live: Vec<PaneId> = state
+        .all_claude()
+        .into_iter()
+        .filter(|(_, c)| c.is_live() || c.remote)
+        .map(|(p, _)| p)
+        .collect();
+    if live.is_empty() {
+        return;
+    }
+    let remote = remote_sessions(alive);
+    for pane_id in live {
+        let change = state.update_claude(pane_id, |slot| {
+            if let Some(info) = slot.as_mut() {
+                info.remote = info.is_live() && remote.contains(&info.session_id);
+            }
+        });
+        emit_change(app, change, pane_id);
+    }
+}
+
+/// Runs `/remote-control` in the pane's Claude session, through the plugin's
+/// watcher: on when it is off; when it is on, Claude shows its own
+/// disconnect dialog in the pane.
+pub fn toggle_remote(state: &AppState, pane_id: PaneId) -> Result<(), String> {
+    if !state.claude_of(pane_id).is_some_and(|c| c.is_live()) {
+        return Err("no Claude session in this pane".into());
+    }
+    if crate::control::notify_watcher(pane_id, &serde_json::json!({ "command": "remote-control" })) {
+        Ok(())
+    } else {
+        Err("the TermPane plugin is not connected to this session; reinstall it in Preferences".into())
+    }
 }
 
 pub fn clear_files(app: &AppHandle, pane_id: PaneId) {

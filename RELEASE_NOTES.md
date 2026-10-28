@@ -1,3 +1,29 @@
+# Release Notes — v0.4.2 (2026-10-28)
+
+Progress bars for your scripts, right on the card, a Remote Control switch for Claude sessions, and tab and Claude session names that finally stay in sync.
+
+## ✨ New: Progress bars on cards
+
+A script or tool that reports its progress now shows a bar along the bottom of its card, with the percentage next to the command — so you can watch a long build, download or migration from any tab. It uses the standard `OSC 9;4` sequence (the one Windows Terminal, Ghostty and WezTerm show), which tools like `cargo` already send. In your own scripts:
+
+```bash
+printf '\e]9;4;1;%d\e\\' 42
+```
+
+sets it to 42 %, and `printf '\e]9;4;0;\e\\'` removes it.
+
+Errors show in red, paused in amber, and "working, no percentage" as a sliding bar. The bar goes away by itself when the shell is back at its prompt.
+
+## ✨ New: Remote Control from the card
+
+Every tab running Claude shows a small phone icon on its card, lit while the session's Remote Control is on. Click it to connect the session to your phone or claude.ai/code — the same as typing `/remote-control`. Clicking it while connected opens Claude's disconnect dialog in that tab. Needs the reinstalled plugin (see below).
+
+## 🐛 Fixed: Renaming tabs and Claude sessions
+
+`/rename` in Claude now renames the tab right away, and renaming a tab renames the running Claude session (you see the new name in Claude's prompt box). Resuming a session you named (`claude --resume`, `/resume`) also gives its name to the tab. Reinstall the Claude Code plugin from **Preferences → Claude Code integration** (or run `/reload-plugins` in open sessions) to get this.
+
+---
+
 # Release Notes — v0.4.1 (2026-10-24)
 
 A fix release for the copy button on Claude's code blocks.

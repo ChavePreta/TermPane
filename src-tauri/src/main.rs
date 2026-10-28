@@ -8,6 +8,7 @@ fn main() {
         Some("mcp") => termpane_lib::cli::run_mcp(),
         Some("tool") => termpane_lib::cli::run_tool(),
         Some("fork") => termpane_lib::cli::run_fork(),
+        Some("watch") => termpane_lib::cli::run_watch(),
         _ => termpane_lib::run(),
     }
 }

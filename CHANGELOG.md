@@ -5,6 +5,53 @@ All notable changes to TermPane are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-10-28
+
+### Added
+
+- **Progress bars on cards.** A program that reports progress with ConEmu's
+  `OSC 9;4;<state>;<percent>` gets a bar along the bottom of its card (accent,
+  red on error, amber when paused, sliding when indeterminate) and the percent
+  after the command. New `src/lib/progress.ts` (`applyProgress`,
+  `clearProgress`, `terminalProgress`), fed from the OSC 9 handler in
+  `TerminalView.svelte`; ignored while the backlog replays and while Claude
+  runs in the pane; cleared when `pane:foreground` goes back to the shell and
+  on pane unmount.
+- **Remote Control toggle on cards.** A tab running Claude shows a phone
+  icon, lit while the session's Remote Control is on; clicking it runs
+  `/remote-control` in the session (on: connects; off: Claude's own
+  disconnect dialog in the pane, which the click also selects). State comes
+  from `bridgeSessionId` in `~/.claude/sessions/<pid>.json` of a live pid
+  (`claude::refresh_remote` on the monitor's slow tick, `ClaudeInfo.remote`);
+  the toggle is `toggle_claude_remote` → `claude::toggle_remote` → the
+  plugin's `termpane watch` stream (`{"command":"remote-control"}`) →
+  `$.command.run`.
+
+### Fixed
+
+- **`/rename` in Claude didn't rename the tab, and renaming the tab didn't
+  rename the session.** Claude keeps the name in memory and keeps re-appending
+  it to the transcript, so the `custom-title` entry TermPane appended was
+  overwritten, and the tab only looked at the title when a turn ended.
+  - Session → tab: the plugin hooks `command.run` on `rename` and reports
+    `TermPaneRename` (`claude::rename_tab_after_session`, pins the label like
+    a sidebar rename; empty args read the title Claude picked).
+  - Tab → session: the plugin holds `termpane watch` open for the session's
+    life (`cli::run_watch`, control-socket op `watch`, `control::notify_watcher`)
+    and runs `/rename` through `$.command.run` when the tab is renamed.
+    `name_sessions_after_tab` falls back to the transcript append when no
+    watcher is connected.
+  - Needs a reinstall of the plugin (or `/reload-plugins`) after updating.
+  - The plugin only starts `termpane watch` when the shell has
+    `TERMPANE_WATCH=1` (set by `spawn_pty`): an older TermPane binary, which
+    shares the installed plugin, would open a new window for `watch`.
+- **Resuming a named session didn't name the tab.** On `SessionStart`, a
+  session with a name the user gave it (a `custom-title` entry; Claude's own
+  names never write one) now names its tab, pinned
+  (`claude::adopt_session_name`, `session_custom_title` reads the whole
+  transcript when the tail has none). A name TermPane derived from a tab
+  ("Label — repo/branch") goes back to "Label" (`label_of_session_name`).
+
 ## [0.4.1] - 2026-10-24
 
 ### Fixed
@@ -639,6 +686,7 @@ Initial release.
 - macOS-first build (`.dmg` + `.app`); Linux `.deb` + `.AppImage` via local
   build only.
 
+[0.4.2]: https://github.com/ChavePreta/TermPane/releases/tag/v0.4.2
 [0.4.1]: https://github.com/ChavePreta/TermPane/releases/tag/v0.4.1
 [0.4.0]: https://github.com/ChavePreta/TermPane/releases/tag/v0.4.0
 [0.3.1]: https://github.com/ChavePreta/TermPane/releases/tag/v0.3.1

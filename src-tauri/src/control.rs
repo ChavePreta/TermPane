@@ -4,14 +4,20 @@
 //! events, and `termpane mcp` lets any Claude session list, read, type into,
 //! open, focus and close tabs across all running instances.
 //!
-//! Wire format: one JSON request line in, one JSON response line out.
+//! Wire format: one JSON request line in, one JSON response line out — except
+//! `watch`, which keeps the connection and streams one JSON line per message
+//! for the Claude session running in a pane (`termpane watch`).
 
 use crate::model::{PaneId, TerminalId};
 use crate::state::AppState;
+use parking_lot::Mutex;
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -20,6 +26,9 @@ pub const ENV_PANE: &str = "TERMPANE_PANE_ID";
 /// This binary's path, so the Claude Code plugin can call `termpane hook`,
 /// `termpane tool` and `termpane fork` from inside a TermPane shell.
 pub const ENV_BIN: &str = "TERMPANE_BIN";
+/// Set to `1` by a TermPane that has `termpane watch`. The plugin checks it
+/// first: an older binary would open a whole new window for `watch`.
+pub const ENV_WATCH: &str = "TERMPANE_WATCH";
 
 // sockaddr_un.sun_path is 104 bytes on macOS, 108 on Linux.
 const MAX_SOCKET_PATH: usize = 100;
@@ -85,11 +94,63 @@ fn serve(app: AppHandle, stream: UnixStream) {
         return;
     }
     let response = match serde_json::from_str::<Value>(&line) {
+        Ok(req) if req["op"] == "watch" => match parse_pane(&req["pane"]) {
+            Ok(pane) => return watch(pane, stream),
+            Err(e) => json!({ "ok": false, "error": e }),
+        },
         Ok(req) => handle(&app, &req).unwrap_or_else(|e| json!({ "ok": false, "error": e })),
         Err(e) => json!({ "ok": false, "error": format!("bad request: {e}") }),
     };
     let mut w = &stream;
     let _ = writeln!(w, "{response}");
+}
+
+// The plugin of the Claude session in each pane listens here for what TermPane
+// asks of it. A pane has at most one: a newer watch (the session restarted, or
+// /clear) replaces the old, whose loop ends as its sender is dropped.
+type Watchers = Mutex<HashMap<PaneId, (u64, mpsc::Sender<Value>)>>;
+
+fn watchers() -> &'static Watchers {
+    static WATCHERS: OnceLock<Watchers> = OnceLock::new();
+    WATCHERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Hands a message to the pane's watching Claude session. `false` when none
+/// is watching.
+pub fn notify_watcher(pane: PaneId, msg: &Value) -> bool {
+    watchers().lock().get(&pane).is_some_and(|(_, tx)| tx.send(msg.clone()).is_ok())
+}
+
+fn watch(pane: PaneId, stream: UnixStream) {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    let (tx, rx) = mpsc::channel::<Value>();
+    watchers().lock().insert(pane, (id, tx));
+    let unregister = move || {
+        let mut w = watchers().lock();
+        if w.get(&pane).is_some_and(|(i, _)| *i == id) {
+            w.remove(&pane);
+        }
+    };
+    // The client never writes after its request: EOF means it went away.
+    // Unregistering drops the sender, which ends the loop below.
+    if let Ok(mut reader) = stream.try_clone() {
+        let _ = reader.set_read_timeout(None);
+        std::thread::spawn(move || {
+            let _ = reader.read(&mut [0u8; 64]);
+            unregister();
+        });
+    }
+    let mut w = &stream;
+    if writeln!(w, "{}", json!({ "ok": true })).is_ok() {
+        while let Ok(msg) = rx.recv() {
+            if writeln!(w, "{msg}").is_err() {
+                break;
+            }
+        }
+    }
+    unregister();
+    let _ = stream.shutdown(std::net::Shutdown::Both);
 }
 
 fn handle(app: &AppHandle, req: &Value) -> Result<Value, String> {

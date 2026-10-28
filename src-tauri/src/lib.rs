@@ -121,6 +121,7 @@ pub fn run() {
             commands::list_claude_sessions,
             commands::fork_claude_session,
             commands::read_background_output,
+            commands::toggle_claude_remote,
             commands::file_diff,
             commands::open_path,
             commands::set_badge_count,

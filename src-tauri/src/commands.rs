@@ -62,6 +62,7 @@ pub(crate) fn spawn_pty(
             crate::control::own_socket_path().to_string_lossy().into_owned(),
         ),
         (crate::control::ENV_BIN, crate::claude::exe_path()),
+        (crate::control::ENV_WATCH, "1".to_string()),
     ];
     let pty::SpawnResult {
         master,
@@ -575,6 +576,12 @@ pub fn read_background_output(
 ) -> Result<crate::claude::BackgroundOutput, String> {
     let pane = parse_pane_id(&pane_id)?;
     crate::claude::read_background(&state, pane, &task_id)
+}
+
+#[tauri::command]
+pub fn toggle_claude_remote(state: tauri::State<'_, AppState>, pane_id: String) -> Result<(), String> {
+    let pane = parse_pane_id(&pane_id)?;
+    crate::claude::toggle_remote(&state, pane)
 }
 
 #[tauri::command]

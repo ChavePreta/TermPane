@@ -4,6 +4,8 @@
 //! - `termpane hook`: Claude Code hook command. Reads the hook payload on stdin
 //!   and forwards it to the TermPane instance that owns this shell. Always exits
 //!   0 silently so it can never block or alter Claude.
+//! - `termpane watch`: what TermPane asks of the Claude session in this shell,
+//!   streamed to the plugin.
 //! - `termpane mcp`: stdio MCP server exposing tab control across every running
 //!   TermPane instance.
 
@@ -77,6 +79,34 @@ pub fn run_fork() {
     }
 }
 
+/// `termpane watch`: run by the plugin for the life of a Claude session in a
+/// TermPane shell. Prints one JSON line per thing TermPane asks of the session
+/// (`{"rename": "<name>"}` when the user renames the tab) until TermPane
+/// closes the connection.
+pub fn run_watch() {
+    let (Ok(socket), Ok(pane)) = (std::env::var(ENV_SOCKET), std::env::var(ENV_PANE)) else {
+        std::process::exit(1);
+    };
+    let Ok(stream) = std::os::unix::net::UnixStream::connect(&socket) else {
+        std::process::exit(1);
+    };
+    let mut w = &stream;
+    if writeln!(w, "{}", json!({ "op": "watch", "pane": pane })).is_err() {
+        std::process::exit(1);
+    }
+    let mut lines = std::io::BufReader::new(&stream).lines();
+    match lines.next() {
+        Some(Ok(first)) if serde_json::from_str::<Value>(&first).is_ok_and(|v| v["ok"] == true) => {}
+        _ => std::process::exit(1),
+    }
+    let mut out = std::io::stdout();
+    for line in lines.map_while(Result::ok) {
+        if writeln!(out, "{line}").and_then(|_| out.flush()).is_err() {
+            break;
+        }
+    }
+}
+
 pub fn run_hook() {
     let (Ok(socket), Ok(pane)) = (std::env::var(ENV_SOCKET), std::env::var(ENV_PANE)) else {
         return;
@@ -103,6 +133,7 @@ fn slim_payload(p: &Value) -> Value {
         "task",
         "artifact",
         "forced",
+        "title",
     ] {
         if let Some(v) = p.get(key) {
             out.insert(key.to_string(), v.clone());

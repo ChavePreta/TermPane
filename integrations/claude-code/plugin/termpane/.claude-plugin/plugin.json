@@ -1,6 +1,6 @@
 {
   "name": "termpane",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Connects Claude Code to the TermPane terminal manager: live status on tab cards, files changed per session, tab control tools, and /fork into a TermPane sub-tab. Does nothing outside TermPane.",
   "author": {
     "name": "TermPane",

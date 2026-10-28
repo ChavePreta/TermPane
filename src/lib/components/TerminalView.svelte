@@ -19,6 +19,7 @@
   import { preferences } from "../preferences";
   import { registerPaneActions, unregisterPaneActions } from "../paneActions";
   import { signalBell, signalNotification } from "../attention";
+  import { applyProgress, clearProgress } from "../progress";
   import { broadcastEnabled } from "../broadcast";
   import { dropTargetPaneId } from "../dragState";
   import { terminals, selectTerminal } from "../store";
@@ -58,6 +59,8 @@
 
   let container: HTMLDivElement;
   let term: Terminal | null = null;
+  // While the backlog is being parsed on mount.
+  let replaying = true;
   let fitAddon: FitAddon | null = null;
   let resizeObs: ResizeObserver | null = null;
   let unlistenOutput: UnlistenFn | null = null;
@@ -150,7 +153,10 @@
       // ConEmu repurposes OSC 9;4;<state>;<progress> for progress reporting — not
       // a notification. Match that grammar (a digit right after "4;") so we don't
       // also swallow an iTerm2 notification whose text merely begins with "4;".
+      // Progress replayed from the backlog is history, and Claude Code's own
+      // is already the card's spinner.
       if (!/^4;\d/.test(data)) signalNotification(terminalId, data);
+      else if (!replaying && !claudeHere) applyProgress(terminalId, paneId, data);
       return true;
     });
     term.parser.registerOscHandler(777, (data) => {
@@ -180,10 +186,12 @@
     });
     try {
       const backlog = await api.getPaneBacklog(paneId);
-      term?.write(base64ToBytes(backlog.data));
+      if (term) term.write(base64ToBytes(backlog.data), () => (replaying = false));
+      else replaying = false;
       replayedUpTo = backlog.end;
     } catch (err) {
       console.error("getPaneBacklog:", err);
+      replaying = false;
       replayedUpTo = 0;
     }
     for (const [chunk, offset] of pending.splice(0)) writeChunk(chunk, offset);
@@ -241,6 +249,7 @@
 
   onDestroy(() => {
     unregisterPaneActions(paneId);
+    clearProgress(paneId);
     clearCodeButtons();
     container?.removeEventListener("copy", handleCopy, true);
     unlistenOutput?.();

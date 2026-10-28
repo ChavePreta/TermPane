@@ -12,6 +12,7 @@
     terminalPorts,
   } from "../store";
   import { attentionTerminals } from "../attention";
+  import { paneProgress, terminalProgress } from "../progress";
   import CardInfo from "./CardInfo.svelte";
 
   type Props = {
@@ -126,7 +127,13 @@
   let editValue = $state("");
 
   let foreground = $derived(aggregateForeground(terminal));
-  let subtitle = $derived(claudeText ?? foreground);
+  let progress = $derived(terminalProgress($paneProgress, terminal.id));
+  let progressText = $derived(
+    progress && progress.state !== "indeterminate" ? `${progress.percent}%` : null,
+  );
+  let subtitle = $derived(
+    claudeText ?? ([foreground, progressText].filter(Boolean).join(" · ") || null),
+  );
   let memoryLabel = $derived(formatBytes(aggregateMemory(terminal)));
   let attentionEntry = $derived($attentionTerminals.get(terminal.id));
   let pulseKey = $derived(attentionEntry?.nonce);
@@ -195,6 +202,22 @@
   function handleToggle(e: MouseEvent) {
     e.stopPropagation();
     onToggleCollapse();
+  }
+
+  let claudePane = $derived(
+    claudeLive ? terminal.panes.find((p) => p.claude === claude) : undefined,
+  );
+  let remote = $derived(claude?.remote ?? false);
+
+  // Off: Claude asks in the pane whether to disconnect, so show the pane.
+  async function handleRemote(e: MouseEvent) {
+    if (!remote) e.stopPropagation();
+    if (!claudePane) return;
+    try {
+      await api.toggleClaudeRemote(claudePane.id);
+    } catch (err) {
+      console.error("toggleClaudeRemote:", err);
+    }
   }
 
   function handleFiles(e: MouseEvent) {
@@ -302,6 +325,26 @@
     {#if memoryLabel}
       <span class="card-mem" title="Memory (shell + descendants)">{memoryLabel}</span>
     {/if}
+    {#if claudePane}
+      <button
+        class="card-remote"
+        class:on={remote}
+        title={remote
+          ? "Remote Control is on — click to disconnect (/remote-control)"
+          : "Remote Control is off — click to connect (/remote-control)"}
+        aria-label={remote ? "Disconnect Remote Control" : "Connect Remote Control"}
+        aria-pressed={remote}
+        onclick={handleRemote}
+      >
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="6" y="2" width="12" height="20" rx="2" />
+          <line x1="11" y1="18" x2="13" y2="18" />
+          {#if !remote}
+            <line x1="3" y1="3" x2="21" y2="21" />
+          {/if}
+        </svg>
+      </button>
+    {/if}
     <button
         class="card-info"
         class:open={infoAnchor !== null}
@@ -316,6 +359,21 @@
         </svg>
       </button>
     <!-- Always takes its place; only shows on hover, so nothing moves. -->
+    {#if progress}
+      <span
+        class="card-progress {progress.state}"
+        role="progressbar"
+        aria-label="Progress"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        aria-valuenow={progress.state === "indeterminate" ? undefined : progress.percent}
+      >
+        <span
+          class="card-progress-fill"
+          style:width={progress.state === "indeterminate" ? null : `${progress.percent}%`}
+        ></span>
+      </span>
+    {/if}
     <button
       class="card-close"
       class:shown={hovering}
@@ -344,6 +402,7 @@
 <style>
   .card {
     -webkit-app-region: no-drag;
+    position: relative;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -357,6 +416,48 @@
     overflow: hidden;
     user-select: none;
     cursor: pointer;
+  }
+
+  .card-progress {
+    position: absolute;
+    left: 6px;
+    right: 6px;
+    bottom: 2px;
+    height: 3px;
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    overflow: hidden;
+    pointer-events: none;
+  }
+
+  .card-progress-fill {
+    display: block;
+    height: 100%;
+    border-radius: 2px;
+    background: var(--accent);
+    transition: width 0.2s ease-out;
+  }
+
+  .card-progress.error .card-progress-fill {
+    background: var(--danger);
+  }
+
+  .card-progress.paused .card-progress-fill {
+    background: #e5a50a;
+  }
+
+  .card-progress.indeterminate .card-progress-fill {
+    width: 30%;
+    animation: progress-slide 1.2s ease-in-out infinite;
+  }
+
+  @keyframes progress-slide {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(340%);
+    }
   }
 
   .card:hover {
@@ -519,6 +620,29 @@
     font-variant-numeric: tabular-nums;
     border: 1px solid var(--border);
     transition: background 0.12s, color 0.12s;
+  }
+
+  .card-remote {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    color: var(--fg-muted);
+    opacity: 0.55;
+    transition: background 0.12s, color 0.12s, opacity 0.12s;
+  }
+
+  .card-remote.on {
+    color: var(--accent);
+    opacity: 1;
+  }
+
+  .card-remote:hover {
+    background: var(--bg-hover);
+    opacity: 1;
   }
 
   .card-files:hover {

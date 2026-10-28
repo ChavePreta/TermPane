@@ -35,6 +35,7 @@ export interface ClaudeInfo {
   background: BackgroundTask[];
   artifacts: ArtifactLink[];
   codeBlocks: CodeBlock[];
+  remote: boolean;
   updatedAt: string;
 }
 
@@ -230,6 +231,8 @@ export const api = {
   listClaudeSessions: () => invoke<ClaudeSession[]>("list_claude_sessions"),
   readBackgroundOutput: (paneId: string, taskId: string) =>
     invoke<BackgroundOutput>("read_background_output", { paneId, taskId }),
+  toggleClaudeRemote: (paneId: string) =>
+    invoke<void>("toggle_claude_remote", { paneId }),
   fileDiff: (path: string) => invoke<string>("file_diff", { path }),
   openPath: (paneId: string, path: string, line?: number, col?: number) =>
     invoke<void>("open_path", { paneId, path, line: line ?? null, col: col ?? null }),

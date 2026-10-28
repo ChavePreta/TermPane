@@ -84,6 +84,43 @@ async function reportOutcome(
   }
 }
 
+// Runs for the session's life: `termpane watch` streams one JSON line per
+// thing TermPane asks of this session. A tab the user renamed in TermPane
+// renames the session with /rename itself, so Claude takes the name in memory
+// (it rewrites its name to the transcript, so a write from outside won't stick).
+async function watchTermPane($: EngineInterface): Promise<void> {
+  const bin = await $.env.get('TERMPANE_BIN')
+  // An older TermPane has no `watch` and would open a new window for it.
+  if (!bin || (await $.env.get('TERMPANE_WATCH')) !== '1') return
+  let pending = ''
+  try {
+    for await (const { stream, text } of $.process.spawn({ argv: [bin, 'watch'] })) {
+      if (stream !== 'stdout') continue
+      pending += text
+      let nl: number
+      while ((nl = pending.indexOf('\n')) >= 0) {
+        const line = pending.slice(0, nl)
+        pending = pending.slice(nl + 1)
+        let msg: { rename?: unknown; command?: unknown }
+        try {
+          msg = JSON.parse(line)
+        } catch {
+          continue
+        }
+        if (typeof msg.rename === 'string' && msg.rename.trim()) {
+          await $.command.run({ command: 'rename', args: msg.rename }).catch(() => {})
+        }
+        // Not awaited: when Remote Control is on it opens a dialog in the pane.
+        if (msg.command === 'remote-control') {
+          void $.command.run({ command: 'remote-control' }).catch(() => {})
+        }
+      }
+    }
+  } catch {
+    // An older TermPane without `watch`, or TermPane closed.
+  }
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const bin = await $.env.get('TERMPANE_BIN')
@@ -100,6 +137,7 @@ export const register: Register = on => {
     }
     const started = await next(e)
     await report($, 'SessionStart')
+    void watchTermPane($)
     return started
   })
   on('session.end', async ($, e, next) => {
@@ -168,6 +206,15 @@ export const register: Register = on => {
       return ran.exitCode === 0 ? { result: text } : { deny: text || `${name} failed` }
     })
   }
+
+  // /rename typed by the user names the TermPane tab too (empty args: Claude
+  // picks the name, which TermPane then reads from the transcript). A rename
+  // this plugin ran for TermPane is not echoed back.
+  on('command.run', { command: 'rename' }, async ($, e, next) => {
+    const ran = await next(e)
+    if (e.origin.kind !== 'plugin') await report($, 'TermPaneRename', { title: e.args.trim() })
+    return ran
+  })
 
   // /fork inside TermPane: copy this session into a TermPane sub-tab nested
   // under the current tab ("FORK - <tab>"), running `claude --resume <id>
